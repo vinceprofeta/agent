@@ -91,7 +91,7 @@
     "@ai-sdk/provider": "^4.0.0",
     "@ai-sdk/provider-utils": "^5.0.0",
     "@convex-dev/eslint-plugin": "^2.0.0",
-    "@convex-dev/rag": "0.7.5",
+    "@convex-dev/rag": "git+https://github.com/vinceprofeta/rag.git#codex/ai-sdk-7-rag",
     "@convex-dev/rate-limiter": "0.3.2",
     "@convex-dev/workflow": "0.4.3",
     "@edge-runtime/vm": "5.0.0",
