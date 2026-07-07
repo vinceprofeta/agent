@@ -1,7 +1,7 @@
 import type {
-  LanguageModelV3,
-  LanguageModelV3Content,
-  LanguageModelV3StreamPart,
+  LanguageModelV4,
+  LanguageModelV4Content,
+  LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
 import { simulateReadableStream, type ProviderMetadata } from "ai";
 import { assert, pick } from "convex-helpers";
@@ -28,11 +28,11 @@ const DEFAULT_USAGE = {
 };
 
 export type MockModelArgs = {
-  provider?: LanguageModelV3["provider"];
-  modelId?: LanguageModelV3["modelId"];
+  provider?: LanguageModelV4["provider"];
+  modelId?: LanguageModelV4["modelId"];
   supportedUrls?:
-    | LanguageModelV3["supportedUrls"]
-    | (() => LanguageModelV3["supportedUrls"]);
+    | LanguageModelV4["supportedUrls"]
+    | (() => LanguageModelV4["supportedUrls"]);
   chunkDelayInMs?: number;
   initialDelayInMs?: number;
   /** A list of the responses for multiple steps.
@@ -40,15 +40,15 @@ export type MockModelArgs = {
    * then the next list would be after the tool response or another tool call.
    * Tool responses come from actual tool calls!
    */
-  contentSteps?: LanguageModelV3Content[][];
+  contentSteps?: LanguageModelV4Content[][];
   /** A single list of content responded from each step.
    * Provide contentSteps instead if you want to do multi-step responses with
    * tool calls.
    */
-  content?: LanguageModelV3Content[];
+  content?: LanguageModelV4Content[];
   // provide either content, contentResponses or doGenerate & doStream
-  doGenerate?: LanguageModelV3["doGenerate"];
-  doStream?: LanguageModelV3["doStream"];
+  doGenerate?: LanguageModelV4["doGenerate"];
+  doStream?: LanguageModelV4["doStream"];
   providerMetadata?: ProviderMetadata;
   fail?:
     | boolean
@@ -62,23 +62,23 @@ function atMostOneOf(...args: unknown[]) {
   return args.filter(Boolean).length <= 1;
 }
 
-export function mockModel(args?: MockModelArgs): LanguageModelV3 {
+export function mockModel(args?: MockModelArgs): LanguageModelV4 {
   return new MockLanguageModel(args ?? {});
 }
 
-export class MockLanguageModel implements LanguageModelV3 {
-  readonly specificationVersion = "v3";
+export class MockLanguageModel implements LanguageModelV4 {
+  readonly specificationVersion = "v4";
 
-  private _supportedUrls: () => LanguageModelV3["supportedUrls"];
+  private _supportedUrls: () => LanguageModelV4["supportedUrls"];
 
-  readonly provider: LanguageModelV3["provider"];
-  readonly modelId: LanguageModelV3["modelId"];
+  readonly provider: LanguageModelV4["provider"];
+  readonly modelId: LanguageModelV4["modelId"];
 
-  doGenerate: LanguageModelV3["doGenerate"];
-  doStream: LanguageModelV3["doStream"];
+  doGenerate: LanguageModelV4["doGenerate"];
+  doStream: LanguageModelV4["doStream"];
 
-  doGenerateCalls: Parameters<LanguageModelV3["doGenerate"]>[0][] = [];
-  doStreamCalls: Parameters<LanguageModelV3["doStream"]>[0][] = [];
+  doGenerateCalls: Parameters<LanguageModelV4["doGenerate"]>[0][] = [];
+  doStreamCalls: Parameters<LanguageModelV4["doStream"]>[0][] = [];
 
   constructor(args: MockModelArgs) {
     assert(
@@ -108,19 +108,19 @@ export class MockLanguageModel implements LanguageModelV3 {
       "Mock error message";
     const metadata = pick(args, ["providerMetadata"]);
 
-    const chunkResponses: LanguageModelV3StreamPart[][] = contentSteps.map(
+    const chunkResponses: LanguageModelV4StreamPart[][] = contentSteps.map(
       (content) => {
-        const chunks: LanguageModelV3StreamPart[] = [
+        const chunks: LanguageModelV4StreamPart[] = [
           { type: "stream-start", warnings: [] },
         ];
         chunks.push(
-          ...content.flatMap((c, ci): LanguageModelV3StreamPart[] => {
+          ...content.flatMap((c, ci): LanguageModelV4StreamPart[] => {
             if (c.type !== "text" && c.type !== "reasoning") {
               return [c];
             }
             const metadata = pick(c, ["providerMetadata"]);
             const deltas = c.text.split(" ");
-            const parts: LanguageModelV3StreamPart[] = [];
+            const parts: LanguageModelV4StreamPart[] = [];
             if (c.type === "reasoning") {
               parts.push({
                 type: "reasoning-start",
@@ -135,7 +135,7 @@ export class MockLanguageModel implements LanguageModelV3 {
                       delta: (di ? " " : "") + delta,
                       id: `reasoning-${ci}`,
                       ...metadata,
-                    }) satisfies LanguageModelV3StreamPart,
+                    }) satisfies LanguageModelV4StreamPart,
                 ),
               );
               parts.push({
@@ -157,7 +157,7 @@ export class MockLanguageModel implements LanguageModelV3 {
                       delta: (di ? " " : "") + delta,
                       id: `txt-${ci}`,
                       ...metadata,
-                    }) satisfies LanguageModelV3StreamPart,
+                    }) satisfies LanguageModelV4StreamPart,
                 ),
               );
               parts.push({

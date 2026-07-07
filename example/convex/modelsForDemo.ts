@@ -1,11 +1,10 @@
-import { type EmbeddingModel } from "ai";
-import type { LanguageModelV3 } from "@ai-sdk/provider";
+import type { EmbeddingModel, LanguageModel } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
 import { groq } from "@ai-sdk/groq";
 import { mockModel } from "@convex-dev/agent";
 
-let languageModel: LanguageModelV3;
+let languageModel: LanguageModel;
 // Note: This is only defined when OPENAI_API_KEY is set. Consumers should
 // handle the undefined case at runtime when using non-OpenAI providers.
 let embeddingModel: EmbeddingModel;

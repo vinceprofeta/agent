@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { createThread } from "./index.js";
 import type { GenericSchema, SchemaDefinition } from "convex/server";
-import { streamText } from "ai";
+import { streamText, toUIMessageStream } from "ai";
 import { components, initConvexTest } from "./setup.test.js";
 import { mockModel } from "./mockModel.js";
 import {
@@ -134,7 +134,9 @@ describe("HTTP Streaming Initiation", () => {
         prompt: "Test",
       });
 
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
       // Ensure the AI SDK result is also fully consumed
       await result.consumeStream();
       expect(streamer.streamId).toBeDefined();
@@ -169,7 +171,9 @@ describe("HTTP Streaming Initiation", () => {
         prompt: "Test",
       });
 
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
 
       // Stream should now be finished
       const streamingStreams = await ctx.runQuery(
@@ -206,7 +210,9 @@ describe("HTTP Streaming Initiation", () => {
         prompt: "Test",
       });
 
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
 
       // Stream should still be in streaming state since finish was skipped
       const streamingStreams = await ctx.runQuery(
@@ -246,7 +252,9 @@ describe("Stream Exclusion Logic", () => {
         model: mockModel({ content: [{ type: "text", text: "Finished" }] }),
         prompt: "Test",
       });
-      await streamer1.consumeStream(r1.toUIMessageStream());
+      await streamer1.consumeStream(
+        toUIMessageStream({ stream: r1.stream }) as any,
+      );
 
       // Create a still-streaming stream
       const streamer2 = new DeltaStreamer(
@@ -281,7 +289,9 @@ describe("Stream Exclusion Logic", () => {
         model: mockModel({ content: [{ type: "text", text: "Done" }] }),
         prompt: "Test",
       });
-      await finishedStreamer.consumeStream(r.toUIMessageStream());
+      await finishedStreamer.consumeStream(
+        toUIMessageStream({ stream: r.stream }) as any,
+      );
 
       // Create and abort a stream
       const abortedStreamer = new DeltaStreamer(
@@ -457,7 +467,9 @@ describe("Delta Stream Consumption", () => {
         }),
         prompt: "Test",
       });
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
       const streamId = streamer.streamId!;
 
       // Fetch all deltas from start
@@ -501,7 +513,9 @@ describe("Delta Stream Consumption", () => {
         model: mockModel({ content: [{ type: "text", text: "Stream One" }] }),
         prompt: "Test 1",
       });
-      await streamer1.consumeStream(r1.toUIMessageStream());
+      await streamer1.consumeStream(
+        toUIMessageStream({ stream: r1.stream }) as any,
+      );
 
       const streamer2 = new DeltaStreamer(
         components.agent,
@@ -513,7 +527,9 @@ describe("Delta Stream Consumption", () => {
         model: mockModel({ content: [{ type: "text", text: "Stream Two" }] }),
         prompt: "Test 2",
       });
-      await streamer2.consumeStream(r2.toUIMessageStream());
+      await streamer2.consumeStream(
+        toUIMessageStream({ stream: r2.stream }) as any,
+      );
 
       const id1 = streamer1.streamId!;
       const id2 = streamer2.streamId!;
@@ -550,7 +566,9 @@ describe("Delta Stream Consumption", () => {
         }),
         prompt: "Test",
       });
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
       const streamId = streamer.streamId!;
 
       // Fetch stream messages and deltas
@@ -602,7 +620,9 @@ describe("Delta Stream Consumption", () => {
         }),
         prompt: "Test",
       });
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
       const streamId = streamer.streamId!;
 
       const deltas = await ctx.runQuery(components.agent.streams.listDeltas, {
@@ -912,7 +932,9 @@ describe("Stream Lifecycle Integration", () => {
         }),
         prompt: "Tell me a story",
       });
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
       const streamId = streamer.streamId!;
 
       // 3. Verify finish state
@@ -1002,7 +1024,9 @@ describe("Stream Lifecycle Integration", () => {
           }),
           prompt: "Test",
         });
-        await streamer.consumeStream(r.toUIMessageStream());
+        await streamer.consumeStream(
+          toUIMessageStream({ stream: r.stream }) as any,
+        );
         streamers.push(streamer);
       }
 
@@ -1045,7 +1069,9 @@ describe("Stream Lifecycle Integration", () => {
         model: mockModel({ content: [{ type: "text", text: "Delete me" }] }),
         prompt: "Test",
       });
-      await streamer.consumeStream(r.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: r.stream }) as any,
+      );
       const streamId = streamer.streamId!;
 
       // Verify deltas exist

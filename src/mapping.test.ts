@@ -8,6 +8,7 @@ import {
   toModelMessage,
   serializeContent,
   toModelMessageContent,
+  toUIFilePart,
   autoDenyUnresolvedApprovals,
 } from "./mapping.js";
 import { api } from "./component/_generated/api.js";
@@ -18,6 +19,7 @@ import path from "path";
 import type { SerializedContent } from "./mapping.js";
 import { validate } from "convex-helpers/validators";
 import type { ModelMessage, StepResult, ToolResultPart, ToolSet } from "ai";
+import type { Context } from "@ai-sdk/provider-utils";
 import type { Infer } from "convex/values";
 
 const testAssetsDir = path.join(__dirname, "../test-assets");
@@ -109,6 +111,21 @@ describe("mapping", () => {
     expect(roundtrip).toMatchObject(toolResult);
   });
 
+  test("custom assistant content round-trips", async () => {
+    const customPart = {
+      type: "custom" as const,
+      kind: "openai.item",
+      providerOptions: { openai: { itemId: "item-123" } },
+    };
+    const { content } = await serializeContent(
+      {} as ActionCtx,
+      {} as AgentComponent,
+      [customPart],
+    );
+    expect((content as unknown[])[0]).toEqual(customPart);
+    expect(toModelMessageContent(content)[0]).toEqual(customPart);
+  });
+
   test("tool results get normalized to output", async () => {
     const toolResult = {
       type: "tool-result" as const,
@@ -172,12 +189,12 @@ describe("mapping", () => {
     );
     expect(called).toBe(true);
     expect(fileIds).toEqual(["file-123"]);
-    // Should have replaced data with a URL
+    // Should have replaced data with a canonical file URL part.
     const serArr = ser as SerializedContent;
-    expect(typeof (serArr as { data: unknown }[])[0].data).toBe("string");
-    expect((serArr as { data: unknown }[])[0].data as string).toMatch(
-      /^https?:\/\//,
-    );
+    expect((serArr as { data: unknown }[])[0].data).toMatchObject({
+      type: "url",
+      url: expect.stringMatching(/^https?:\/\//),
+    });
   });
 
   test("sanity: fileIds are not returned for small files", async () => {
@@ -217,6 +234,8 @@ describe("mapping", () => {
       type: "tool-approval-request" as const,
       approvalId: "approval-123",
       toolCallId: "tool-call-456",
+      isAutomatic: true,
+      signature: "hmac-signature",
     };
     const { content } = await serializeContent(
       {} as ActionCtx,
@@ -225,6 +244,21 @@ describe("mapping", () => {
     );
     expect(content).toHaveLength(1);
     expect((content as unknown[])[0]).toMatchObject(approvalRequest);
+    expect(toModelMessageContent(content)[0]).toMatchObject(approvalRequest);
+  });
+
+  test("provider file references become v7 UI providerReference parts", () => {
+    const uiPart = toUIFilePart({
+      type: "file",
+      mediaType: "application/pdf",
+      data: { type: "reference", reference: { openai: "file-abc" } },
+    });
+    expect(uiPart).toMatchObject({
+      type: "file",
+      mediaType: "application/pdf",
+      url: "about:blank",
+      providerReference: { openai: "file-abc" },
+    });
   });
 
   test("tool-approval-response with approved: true is preserved", async () => {
@@ -276,7 +310,12 @@ describe("mapping", () => {
       {
         role: "assistant",
         content: [
-          { type: "tool-call", toolCallId: "c1", toolName: "search", input: {} },
+          {
+            type: "tool-call",
+            toolCallId: "c1",
+            toolName: "search",
+            input: {},
+          },
         ],
       },
       {
@@ -292,15 +331,18 @@ describe("mapping", () => {
       },
     ];
     const step1Messages: ModelMessage[] = [
-      ...step0Messages,
       { role: "assistant", content: [{ type: "text", text: "thinking" }] },
     ];
     const step2Messages: ModelMessage[] = [
-      ...step1Messages,
       {
         role: "assistant",
         content: [
-          { type: "tool-call", toolCallId: "c2", toolName: "search", input: {} },
+          {
+            type: "tool-call",
+            toolCallId: "c2",
+            toolName: "search",
+            input: {},
+          },
         ],
       },
       {
@@ -315,8 +357,13 @@ describe("mapping", () => {
         ],
       },
     ];
+    const cumulativeStep2Messages: ModelMessage[] = [
+      ...step0Messages,
+      ...step1Messages,
+      ...step2Messages,
+    ];
 
-    const makeStep = (messages: ModelMessage[]): StepResult<ToolSet> =>
+    const makeStep = (messages: ModelMessage[]): StepResult<ToolSet, Context> =>
       ({
         content: [],
         text: "",
@@ -342,7 +389,7 @@ describe("mapping", () => {
           messages,
         },
         providerMetadata: undefined,
-      }) as unknown as StepResult<ToolSet>;
+      }) as unknown as StepResult<ToolSet, Context>;
 
     const contentTypes = (msg: { content: unknown }): string[] => {
       const c = msg.content;
@@ -350,13 +397,12 @@ describe("mapping", () => {
       return c.map((p: { type?: string }) => p.type ?? "?");
     };
 
-    test("first step (count=0) serializes all response messages", async () => {
+    test("serializes all response messages from the step", async () => {
       const res = await serializeNewMessagesInStep(
         ctx,
         component,
         makeStep(step0Messages),
         undefined,
-        0,
       );
       expect(res.messages).toHaveLength(2);
       expect(res.messages[0].message.role).toBe("assistant");
@@ -365,26 +411,24 @@ describe("mapping", () => {
       expect(contentTypes(res.messages[1].message)).toEqual(["tool-result"]);
     });
 
-    test("middle step (count=2) serializes only the new text message", async () => {
+    test("text-only step serializes its one response message", async () => {
       const res = await serializeNewMessagesInStep(
         ctx,
         component,
         makeStep(step1Messages),
         undefined,
-        2,
       );
       expect(res.messages).toHaveLength(1);
       expect(res.messages[0].message.role).toBe("assistant");
       expect(contentTypes(res.messages[0].message)).toEqual(["text"]);
     });
 
-    test("multi-message step (count=3) serializes the new tool-call + tool-result pair", async () => {
+    test("multi-message step serializes the tool-call + tool-result pair", async () => {
       const res = await serializeNewMessagesInStep(
         ctx,
         component,
         makeStep(step2Messages),
         undefined,
-        3,
       );
       expect(res.messages).toHaveLength(2);
       expect(res.messages[0].message.role).toBe("assistant");
@@ -393,19 +437,24 @@ describe("mapping", () => {
       expect(contentTypes(res.messages[1].message)).toEqual(["tool-result"]);
     });
 
-    // Regression test for the actually-broken shape: a single step appended
-    // assistant(text) + assistant(tool-call) + tool(tool-result), so the new
-    // tail has length 3 and the last message is a tool message. The old
-    // heuristic took `slice(-2)` whenever the last role was "tool" and would
-    // have dropped the leading text. The watermark returns all three.
+    // Regression test for the actually-broken shape: a single step returns
+    // assistant(text) + assistant(tool-call) + tool(tool-result). Under AI SDK
+    // 7 the step array is already per-step, so all three must be saved.
     test("returns all three messages when a step adds text + tool-call + tool-result", async () => {
       const stepMessages: ModelMessage[] = [
-        ...step0Messages, // length 2
-        { role: "assistant", content: [{ type: "text", text: "Let me check..." }] },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Let me check..." }],
+        },
         {
           role: "assistant",
           content: [
-            { type: "tool-call", toolCallId: "c3", toolName: "search", input: {} },
+            {
+              type: "tool-call",
+              toolCallId: "c3",
+              toolName: "search",
+              input: {},
+            },
           ],
         },
         {
@@ -425,7 +474,6 @@ describe("mapping", () => {
         component,
         makeStep(stepMessages),
         undefined,
-        step0Messages.length,
       );
       expect(res.messages).toHaveLength(3);
       expect(res.messages[0].message.role).toBe("assistant");
@@ -440,61 +488,23 @@ describe("mapping", () => {
       const res = await serializeNewMessagesInStep(
         ctx,
         component,
-        makeStep(step1Messages),
+        makeStep([]),
         undefined,
-        step1Messages.length,
       );
       expect(res.messages).toHaveLength(1);
       expect(res.messages[0].message.role).toBe("assistant");
       expect(res.messages[0].message.content).toEqual([]);
     });
 
-    // Pin the caller-drift behavior: if the watermark is past the end of
-    // response.messages (e.g. the caller mistracked), the slice is empty and
-    // we fall through to the synthetic anchor. Future "fixes" should not
-    // accidentally change this without intent.
-    test("watermark beyond response.messages.length returns the synthetic fallback", async () => {
-      const res = await serializeNewMessagesInStep(
-        ctx,
-        component,
-        makeStep(step1Messages),
-        undefined,
-        step1Messages.length + 5,
-      );
-      expect(res.messages).toHaveLength(1);
-      expect(res.messages[0].message.role).toBe("assistant");
-      expect(res.messages[0].message.content).toEqual([]);
-    });
-
-    // AI SDK v6 makes step.response.messages cumulative across steps:
-    // step N's array contains all messages from steps 0..N. Without the
-    // previousResponseMessageCount watermark, every multi-step save duplicates
-    // all prior messages. These tests demonstrate the bug and the fix.
-    describe("multi-step loop — previousStep watermark", () => {
-      test("without watermark, step 2 re-saves all cumulative messages (demonstrates the bug)", async () => {
-        // step2Messages = step0 (2 msgs) + step1 (1 msg) + step2 new (2 msgs) = 5 total
+    describe("multi-step loop — AI SDK 7 per-step responses", () => {
+      test("v6 cumulative response arrays are no longer sliced", async () => {
         const res = await serializeNewMessagesInStep(
           ctx,
           component,
-          makeStep(step2Messages),
+          makeStep(cumulativeStep2Messages),
           undefined,
-          0,
         );
         expect(res.messages).toHaveLength(5);
-      });
-
-      test("with watermark, step 2 saves only its 2 new messages", async () => {
-        const step1 = makeStep(step1Messages);
-        const res = await serializeNewMessagesInStep(
-          ctx,
-          component,
-          makeStep(step2Messages),
-          undefined,
-          step1.response.messages.length,
-        );
-        expect(res.messages).toHaveLength(2);
-        expect(contentTypes(res.messages[0].message)).toEqual(["tool-call"]);
-        expect(contentTypes(res.messages[1].message)).toEqual(["tool-result"]);
       });
     });
   });

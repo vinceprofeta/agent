@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { createThread } from "./index.js";
 import type { GenericSchema, SchemaDefinition } from "convex/server";
-import { streamText } from "ai";
+import { streamText, toUIMessageStream } from "ai";
 import { components, initConvexTest } from "./setup.test.js";
 import { mockModel } from "./mockModel.js";
 import { compressUIMessageChunks, DeltaStreamer } from "./streaming.js";
@@ -48,7 +48,9 @@ describe("DeltaStreamer", () => {
         model: mockModel(),
         prompt: "Test prompt",
       });
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
       const streamId = streamer.streamId!;
       expect(streamId).toBeDefined();
       const deltas = await ctx.runQuery(components.agent.streams.listDeltas, {
@@ -56,7 +58,7 @@ describe("DeltaStreamer", () => {
         cursors: [{ cursor: 0, streamId }],
       });
       const { parts } = getParts(deltas);
-      const stream = result.toUIMessageStream();
+      const stream = toUIMessageStream({ stream: result.stream }) as any;
       for await (const part of stream) {
         const expected = parts.shift();
         expect(part).toEqual(expected);
@@ -81,7 +83,9 @@ describe("DeltaStreamer", () => {
         }),
         prompt: "Test prompt",
       });
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
       const streamId = streamer.streamId!;
       expect(streamId).toBeDefined();
       const deltas = await ctx.runQuery(components.agent.streams.listDeltas, {
@@ -147,7 +151,9 @@ describe("DeltaStreamer", () => {
           console.error(error);
         },
       });
-      await streamer.consumeStream(result.toUIMessageStream());
+      await streamer.consumeStream(
+        toUIMessageStream({ stream: result.stream }) as any,
+      );
       const streamId = streamer.streamId!;
       expect(streamId).toBeDefined();
       const deltas = await ctx.runQuery(components.agent.streams.listDeltas, {

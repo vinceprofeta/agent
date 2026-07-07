@@ -1,5 +1,5 @@
 // See the docs at https://docs.convex.dev/agents/tool-approval
-import { Agent, createTool, stepCountIs } from "@convex-dev/agent";
+import { Agent, createTool, isStepCount } from "@convex-dev/agent";
 import { components } from "../_generated/api";
 import { defaultConfig } from "./config";
 import { z } from "zod/v4";
@@ -52,7 +52,7 @@ export const approvalAgent = new Agent(components.agent, {
     transferMoney: transferMoneyTool,
     checkBalance: checkBalanceTool,
   },
-  stopWhen: stepCountIs(5),
+  stopWhen: isStepCount(5),
   ...defaultConfig,
   callSettings: { temperature: 0 },
 });

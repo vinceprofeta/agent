@@ -16,6 +16,9 @@
     "component"
   ],
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "setup": "node setup.cjs --init",
     "dev": "convex dev --start 'npm run dev:build'",
@@ -69,8 +72,8 @@
     }
   },
   "peerDependencies": {
-    "@ai-sdk/provider-utils": "^4.0.6",
-    "ai": "^6.0.35",
+    "@ai-sdk/provider-utils": "^5.0.0",
+    "ai": "^7.0.0",
     "convex": "^1.24.8",
     "convex-helpers": "^0.1.103",
     "react": "^18.3.1 || ^19.0.0"
@@ -81,12 +84,12 @@
     }
   },
   "devDependencies": {
-    "@ai-sdk/anthropic": "3.0.13",
-    "@ai-sdk/google": "3.0.30",
-    "@ai-sdk/groq": "3.0.8",
-    "@ai-sdk/openai": "3.0.10",
-    "@ai-sdk/provider": "3.0.3",
-    "@ai-sdk/provider-utils": "4.0.6",
+    "@ai-sdk/anthropic": "^4.0.0",
+    "@ai-sdk/google": "^4.0.0",
+    "@ai-sdk/groq": "^4.0.0",
+    "@ai-sdk/openai": "^4.0.0",
+    "@ai-sdk/provider": "^4.0.0",
+    "@ai-sdk/provider-utils": "^5.0.0",
     "@convex-dev/eslint-plugin": "^2.0.0",
     "@convex-dev/rag": "0.7.5",
     "@convex-dev/rate-limiter": "0.3.2",
@@ -102,11 +105,11 @@
     "@radix-ui/react-slot": "1.2.4",
     "@radix-ui/react-toast": "1.2.15",
     "@tailwindcss/typography": "0.5.19",
-    "@types/node": "20.19.37",
+    "@types/node": "^24.0.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "4.7.0",
-    "ai": "6.0.35",
+    "ai": "^7.0.0",
     "autoprefixer": "10.4.27",
     "chokidar-cli": "3.0.0",
     "class-variance-authority": "0.7.1",

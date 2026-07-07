@@ -248,6 +248,8 @@ export function definePlaygroundAPI<DataModel extends GenericDataModel>(
       // Args passed through to generateText
       prompt: v.optional(v.string()),
       messages: v.optional(v.array(vMessage)),
+      instructions: v.optional(v.string()),
+      /** @deprecated Use `instructions` instead. */
       system: v.optional(v.string()),
     },
     handler: async (ctx: GenericActionCtx<DataModel>, args) => {
@@ -258,6 +260,7 @@ export function definePlaygroundAPI<DataModel extends GenericDataModel>(
         threadId,
         contextOptions,
         storageOptions,
+        instructions,
         system,
         messages,
         ...rest
@@ -275,13 +278,14 @@ export function definePlaygroundAPI<DataModel extends GenericDataModel>(
         { threadId, userId },
         {
           ...rest,
-          ...(system ? { system } : {}),
+          ...((instructions ?? system)
+            ? { instructions: instructions ?? system }
+            : {}),
           ...(messages ? { messages: messages.map(toModelMessage) } : {}),
         },
         { contextOptions, storageOptions, saveStreamDeltas: true },
       );
       const outputMessages: MessageDoc[][] = [];
-      let previousResponseMessageCount = 0;
       for (const step of await steps) {
         const { messages } = await serializeNewMessagesInStep(
           ctx,
@@ -291,9 +295,7 @@ export function definePlaygroundAPI<DataModel extends GenericDataModel>(
             model: getModelName(agent.options.languageModel),
             provider: getProviderName(agent.options.languageModel),
           },
-          previousResponseMessageCount,
         );
-        previousResponseMessageCount = step.response.messages.length;
         outputMessages.push(
           messages.map((messageWithMetadata, i) => {
             return {

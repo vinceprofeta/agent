@@ -8,7 +8,7 @@ import { agent } from "../agents/simple";
 import { authorizeThreadAccess } from "../threads";
 
 export const rag = new RAG(components.rag, {
-  textEmbeddingModel: embeddingModel,
+  textEmbeddingModel: embeddingModel as any,
   embeddingDimension: 1536,
 });
 

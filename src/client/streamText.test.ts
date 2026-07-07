@@ -44,7 +44,7 @@ export const streamTextReturnImmediately = action({
       },
     );
     // Drain the stream the way an HTTP response would. This triggers
-    // onStepFinish for every step, including the final one.
+    // onStepEnd for every step, including the final one.
     await result.consumeStream();
     return { ok: true };
   },

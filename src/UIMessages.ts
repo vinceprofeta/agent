@@ -1,8 +1,10 @@
 import {
   convertToModelMessages,
   type UIMessage as AIUIMessage,
+  type CustomContentUIPart,
   type DeepPartial,
   type DynamicToolUIPart,
+  type ReasoningFileUIPart,
   type ReasoningUIPart,
   type SourceDocumentUIPart,
   type SourceUrlUIPart,
@@ -14,7 +16,12 @@ import {
   type UITools,
 } from "ai";
 import type { Infer } from "convex/values";
-import { toModelMessage, fromModelMessage, toUIFilePart } from "./mapping.js";
+import {
+  toModelMessage,
+  fromModelMessage,
+  toUIFilePart,
+  toUIReasoningFilePart,
+} from "./mapping.js";
 import {
   extractReasoning,
   extractText,
@@ -398,7 +405,13 @@ function createAssistantUIMessage<
 
   // Extract approval parts from raw message content for UI rendering
   type ApprovalPart =
-    | { type: "tool-approval-request"; approvalId: string; toolCallId: string }
+    | {
+        type: "tool-approval-request";
+        approvalId: string;
+        toolCallId: string;
+        isAutomatic?: boolean;
+        signature?: string;
+      }
     | {
         type: "tool-approval-response";
         approvalId: string;
@@ -490,11 +503,23 @@ function createAssistantUIMessage<
             ...contentPart,
           } satisfies TextUIPart);
           break;
+        case "custom":
+          allParts.push({
+            ...contentPart,
+            providerMetadata:
+              contentPart.providerOptions ?? message.providerMetadata,
+          } satisfies CustomContentUIPart);
+          break;
         case "reasoning":
           allParts.push({
             ...partCommon,
             ...contentPart,
           } satisfies ReasoningUIPart);
+          break;
+        case "reasoning-file":
+          allParts.push(
+            toUIReasoningFilePart(contentPart) satisfies ReasoningFileUIPart,
+          );
           break;
         case "file":
         case "image":
@@ -613,6 +638,8 @@ function createAssistantUIMessage<
           const typedPart = contentPart as {
             toolCallId: string;
             approvalId: string;
+            isAutomatic?: boolean;
+            signature?: string;
           };
           const toolCallPart = allParts.find(
             (part) =>
@@ -623,6 +650,12 @@ function createAssistantUIMessage<
             toolCallPart.state = "approval-requested";
             (toolCallPart as ToolUIPart & { approval?: object }).approval = {
               id: typedPart.approvalId,
+              ...(typedPart.isAutomatic !== undefined
+                ? { isAutomatic: typedPart.isAutomatic }
+                : {}),
+              ...(typedPart.signature !== undefined
+                ? { signature: typedPart.signature }
+                : {}),
             };
           } else {
             console.warn(
@@ -647,12 +680,26 @@ function createAssistantUIMessage<
           ) as ToolUIPart | undefined;
 
           if (toolCallPart) {
+            const existingApproval = (
+              toolCallPart as ToolUIPart & {
+                approval?: {
+                  isAutomatic?: boolean;
+                  signature?: string;
+                };
+              }
+            ).approval;
             if (typedPart.approved) {
               toolCallPart.state = "approval-responded";
               (toolCallPart as ToolUIPart & { approval?: object }).approval = {
                 id: typedPart.approvalId,
                 approved: true,
                 reason: typedPart.reason,
+                ...(existingApproval?.isAutomatic !== undefined
+                  ? { isAutomatic: existingApproval.isAutomatic }
+                  : {}),
+                ...(existingApproval?.signature !== undefined
+                  ? { signature: existingApproval.signature }
+                  : {}),
               };
             } else {
               toolCallPart.state = "output-denied";
@@ -660,6 +707,12 @@ function createAssistantUIMessage<
                 id: typedPart.approvalId,
                 approved: false,
                 reason: typedPart.reason,
+                ...(existingApproval?.isAutomatic !== undefined
+                  ? { isAutomatic: existingApproval.isAutomatic }
+                  : {}),
+                ...(existingApproval?.signature !== undefined
+                  ? { signature: existingApproval.signature }
+                  : {}),
               };
             }
           } else {
@@ -710,6 +763,12 @@ function createAssistantUIMessage<
         // update state if not in a final state
         (toolCallPart as ToolUIPart & { approval?: object }).approval = {
           id: approvalPart.approvalId,
+          ...(approvalPart.isAutomatic !== undefined
+            ? { isAutomatic: approvalPart.isAutomatic }
+            : {}),
+          ...(approvalPart.signature !== undefined
+            ? { signature: approvalPart.signature }
+            : {}),
         };
         if (!finalStates.has(toolCallPart.state)) {
           toolCallPart.state = "approval-requested";
@@ -724,11 +783,22 @@ function createAssistantUIMessage<
       ) as ToolUIPart | undefined;
 
       if (toolCallPart) {
+        const existingApproval = (
+          toolCallPart as ToolUIPart & {
+            approval?: { isAutomatic?: boolean; signature?: string };
+          }
+        ).approval;
         // Always update approval info, but only update state if not in a final state
         (toolCallPart as ToolUIPart & { approval?: object }).approval = {
           id: approvalPart.approvalId,
           approved: approvalPart.approved,
           reason: approvalPart.reason,
+          ...(existingApproval?.isAutomatic !== undefined
+            ? { isAutomatic: existingApproval.isAutomatic }
+            : {}),
+          ...(existingApproval?.signature !== undefined
+            ? { signature: existingApproval.signature }
+            : {}),
         };
         if (!finalStates.has(toolCallPart.state)) {
           if (approvalPart.approved) {

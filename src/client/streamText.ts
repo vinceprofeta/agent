@@ -1,10 +1,6 @@
-import type {
-  StepResult,
-  StreamTextResult,
-  ToolSet,
-  UIMessage as AIUIMessage,
-} from "ai";
-import { streamText as streamTextAi } from "ai";
+import type { StepResult, StreamTextResult, ToolSet } from "ai";
+import type { Context } from "@ai-sdk/provider-utils";
+import { streamText as streamTextAi, toUIMessageStream } from "ai";
 import {
   compressUIMessageChunks,
   DeltaStreamer,
@@ -43,7 +39,7 @@ export async function streamText<
    */
   streamTextArgs: AgentPrompt &
     Omit<
-      Parameters<typeof streamTextAi<TOOLS, OUTPUT>>[0],
+      Parameters<typeof streamTextAi<TOOLS, Context, OUTPUT>>[0],
       "model" | "prompt" | "messages"
     > & {
       /**
@@ -73,22 +69,24 @@ export async function streamText<
     saveStreamDeltas?: boolean | StreamingOptions;
     agentForToolCtx?: Agent;
   },
-): Promise<StreamTextResult<TOOLS, OUTPUT> & GenerationOutputMetadata> {
+): Promise<
+  StreamTextResult<TOOLS, Context, OUTPUT> & GenerationOutputMetadata
+> {
   const { threadId } = options ?? {};
   const { args, userId, order, stepOrder, promptMessageId, ...call } =
     await startGeneration(ctx, component, streamTextArgs, options);
 
-  const steps: StepResult<TOOLS>[] = [];
+  const steps: StepResult<TOOLS, Context>[] = [];
 
   // Track the final step for atomic save with stream finish (issue #181).
   // Only used when streamText awaits stream consumption itself; the
-  // `returnImmediately` path saves inline instead (see onStepFinish below).
-  let pendingFinalStep: StepResult<TOOLS> | undefined;
+  // `returnImmediately` path saves inline instead (see onStepEnd below).
+  let pendingFinalStep: StepResult<TOOLS, Context> | undefined;
 
   // Whether streamText will await stream consumption before returning.
   // When false (saveStreamDeltas.returnImmediately === true), we cannot
   // defer the final-step save to a post-await block — the function has
-  // already returned by the time onStepFinish fires. See issue #265.
+  // already returned by the time onStepEnd fires. See issue #265.
   const willAwaitStream =
     Boolean(threadId) &&
     (options.saveStreamDeltas === true ||
@@ -123,20 +121,24 @@ export async function streamText<
         )
       : undefined;
 
-  const result = streamTextAi({
-    ...args,
+  const { onStepFinish, ...argsWithoutDeprecatedCallbacks } =
+    args as typeof args & {
+      onStepFinish?: (step: StepResult<TOOLS, Context>) => unknown;
+    };
+  const result = streamTextAi<TOOLS, Context, OUTPUT>({
+    ...argsWithoutDeprecatedCallbacks,
     abortSignal: streamer?.abortController.signal ?? args.abortSignal,
     experimental_transform: mergeTransforms(
       options?.saveStreamDeltas,
       streamTextArgs.experimental_transform,
     ),
-    onError: async (error) => {
+    onError: async (error: { error: unknown }) => {
       console.error("onError", error);
       await call.fail(errorToString(error.error));
       await streamer?.fail(errorToString(error.error));
       return streamTextArgs.onError?.(error);
     },
-    prepareStep: async (options) => {
+    prepareStep: async (options: any) => {
       const result = await streamTextArgs.prepareStep?.(options);
       if (result) {
         const model = result.model ?? options.model;
@@ -150,7 +152,7 @@ export async function streamText<
       }
       return undefined;
     },
-    onStepFinish: async (step) => {
+    onStepEnd: async (step: StepResult<TOOLS, Context>) => {
       steps.push(step);
       const createPendingMessage = await willContinue(steps, args.stopWhen);
       if (!createPendingMessage && streamer) {
@@ -170,18 +172,21 @@ export async function streamText<
       } else {
         await call.save({ step }, createPendingMessage);
       }
-      return args.onStepFinish?.(step);
+      return args.onStepEnd?.(step) ?? onStepFinish?.(step);
     },
-  }) as StreamTextResult<TOOLS, OUTPUT>;
+  } as any) as StreamTextResult<TOOLS, Context, OUTPUT>;
   const stream = streamer?.consumeStream(
-    result.toUIMessageStream<AIUIMessage<TOOLS>>(),
+    toUIMessageStream<TOOLS>({
+      stream: result.stream,
+      tools: args.tools,
+    }) as any,
   );
   if (willAwaitStream) {
     try {
       await stream;
       await result.consumeStream();
     } catch (e) {
-      // If the stream errored (e.g. onStepFinish threw), the DeltaStreamer's
+      // If the stream errored (e.g. onStepEnd threw), the DeltaStreamer's
       // finish() was never called, leaving the streaming message stuck in
       // "streaming" state. Clean it up by marking it as aborted.
       await streamer?.fail(e instanceof Error ? e.message : String(e));

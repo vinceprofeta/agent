@@ -1,14 +1,15 @@
 import {
-  stepCountIs,
-  type CallSettings,
+  isStepCount,
   type GenerateObjectResult,
   type IdGenerator,
+  type Instructions,
   type LanguageModel,
   type ModelMessage,
   type StepResult,
   type StopCondition,
   type ToolSet,
 } from "ai";
+import type { Context } from "@ai-sdk/provider-utils";
 import {
   serializeResponseMessages,
   serializeObjectResult,
@@ -26,6 +27,7 @@ import type { Agent } from "./index.js";
 import { assert, omit } from "convex-helpers";
 import { saveInputMessages } from "./saveInputMessages.js";
 import type { GenericActionCtx, GenericDataModel } from "convex/server";
+import type { AgentCallSettings } from "./types.js";
 
 export async function startGeneration<
   T,
@@ -80,7 +82,12 @@ export async function startGeneration<
      * aborted, it will trigger this signal when detected.
      */
     abortSignal?: AbortSignal;
-    stopWhen?: StopCondition<Tools> | Array<StopCondition<Tools>>;
+    instructions?: Instructions;
+    /** @deprecated Use `instructions` instead. */
+    system?: Instructions;
+    stopWhen?:
+      | StopCondition<Tools, Context>
+      | Array<StopCondition<Tools, Context>>;
     _internal?: { generateId?: IdGenerator };
   },
   {
@@ -96,12 +103,12 @@ export async function startGeneration<
     },
 ): Promise<{
   args: T & {
-    system?: string;
+    instructions?: Instructions;
     model: LanguageModel;
     messages: ModelMessage[];
     prompt?: never;
     tools?: Tools;
-  } & CallSettings;
+  } & AgentCallSettings;
   order: number;
   stepOrder: number;
   userId: string | undefined;
@@ -109,7 +116,7 @@ export async function startGeneration<
   updateModel: (model: ModelOrMetadata | undefined) => void;
   save: <TOOLS extends ToolSet>(
     toSave:
-      | { step: StepResult<TOOLS> }
+      | { step: StepResult<TOOLS, Context> }
       | { object: GenerateObjectResult<unknown> },
     createPendingMessage?: boolean,
     finishStreamId?: string,
@@ -184,35 +191,45 @@ export async function startGeneration<
     promptMessageId,
     agent: opts.agentForToolCtx,
   } satisfies ToolCtx;
-  const tools = wrapTools(toolCtx, args.tools) as Tools;
+  const wrappedTools = wrapTools(toolCtx, args.tools);
+  const promptInstructions = args.instructions ?? args.system;
   const aiArgs = {
     ...opts.callSettings,
     providerOptions: opts.providerOptions,
-    ...omit(args, ["promptMessageId", "messages", "prompt"]),
+    ...omit(args as any, [
+      "promptMessageId",
+      "messages",
+      "prompt",
+      "instructions",
+      "system",
+      "toolApproval",
+    ]),
     model,
+    instructions: promptInstructions,
     messages: context.messages,
+    allowSystemInMessages:
+      (args as { allowSystemInMessages?: boolean }).allowSystemInMessages ??
+      (context.messages.some((message) => message.role === "system")
+        ? true
+        : undefined),
     stopWhen:
-      args.stopWhen ?? (opts.maxSteps ? stepCountIs(opts.maxSteps) : undefined),
-    tools,
-  } as T & {
+      args.stopWhen ?? (opts.maxSteps ? isStepCount(opts.maxSteps) : undefined),
+    tools: wrappedTools.tools as Tools,
+    toolApproval:
+      (args as { toolApproval?: unknown }).toolApproval ??
+      wrappedTools.toolApproval,
+  } as unknown as T & {
     model: LanguageModel;
     messages: ModelMessage[];
     prompt?: never;
     tools?: Tools;
     _internal?: { generateId?: IdGenerator };
-  } & CallSettings;
+  } & AgentCallSettings;
   // NOTE: We intentionally do NOT override _internal.generateId here.
   // The AI SDK uses generateId() for many internal IDs (approval IDs,
   // tool execution IDs, message IDs, etc.) and they must be unique.
   // The pending message is linked via the explicit `pendingMessageId`
   // parameter passed to addMessages in the save closure.
-  // Track how many response messages we've already saved across steps.
-  // step.response.messages is cumulative — each step appends to it.
-  // We need to know which messages are new in each step to serialize
-  // only the new ones (important for tool approval flows where the SDK
-  // may add extra messages like approval tool-results).
-  let previousResponseMessageCount = 0;
-
   return {
     args: aiArgs,
     order: order ?? 0,
@@ -228,7 +245,7 @@ export async function startGeneration<
     fail,
     save: async <TOOLS extends ToolSet>(
       toSave:
-        | { step: StepResult<TOOLS> }
+        | { step: StepResult<TOOLS, Context> }
         | { object: GenerateObjectResult<unknown> },
       createPendingMessage?: boolean,
       /**
@@ -247,17 +264,12 @@ export async function startGeneration<
             activeModel,
           );
         } else {
-          const allResponseMessages = toSave.step.response.messages;
-          const newResponseMessages = allResponseMessages.slice(
-            previousResponseMessageCount,
-          );
-          previousResponseMessageCount = allResponseMessages.length;
           serialized = await serializeResponseMessages(
             ctx,
             component,
             toSave.step,
             activeModel,
-            newResponseMessages,
+            toSave.step.response.messages,
           );
         }
         const embeddings = await embedMessages(
@@ -278,7 +290,7 @@ export async function startGeneration<
           agentName: opts.agentName,
           promptMessageId,
           pendingMessageId,
-          messages: serialized.messages,
+          messages: serialized.messages as any,
           embeddings,
           failPendingSteps: false,
           finishStreamId,

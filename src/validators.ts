@@ -40,9 +40,39 @@ export const vTextPart = v.object({
   providerMetadata,
 });
 
+export const vCustomPart = v.object({
+  type: v.literal("custom"),
+  kind: v.string(),
+  providerOptions,
+  providerMetadata,
+});
+
+const vStoredDataContent = v.union(v.string(), v.bytes());
+const vProviderReference = v.record(v.string(), v.string());
+const vFileData = v.union(
+  vStoredDataContent,
+  v.object({
+    type: v.literal("data"),
+    data: vStoredDataContent,
+  }),
+  v.object({
+    type: v.literal("url"),
+    url: v.string(),
+  }),
+  v.object({
+    type: v.literal("reference"),
+    reference: vProviderReference,
+  }),
+  v.object({
+    type: v.literal("text"),
+    text: v.string(),
+  }),
+  vProviderReference,
+);
+
 export const vImagePart = v.object({
   type: v.literal("image"),
-  image: v.union(v.string(), v.bytes()),
+  image: v.union(v.string(), v.bytes(), vProviderReference),
   mediaType: v.optional(v.string()),
   /** @deprecated Use `mediaType` instead. */
   mimeType: v.optional(v.string()),
@@ -51,7 +81,7 @@ export const vImagePart = v.object({
 
 export const vFilePart = v.object({
   type: v.literal("file"),
-  data: v.union(v.string(), v.bytes()),
+  data: vFileData,
   filename: v.optional(v.string()),
   mediaType: v.optional(v.string()),
   /** @deprecated Use `mediaType` instead. */
@@ -73,6 +103,24 @@ export const vReasoningPart = v.object({
   providerMetadata,
 });
 
+export const vReasoningFilePart = v.object({
+  type: v.literal("reasoning-file"),
+  data: v.union(
+    vStoredDataContent,
+    v.object({
+      type: v.literal("data"),
+      data: vStoredDataContent,
+    }),
+    v.object({
+      type: v.literal("url"),
+      url: v.string(),
+    }),
+  ),
+  mediaType: v.string(),
+  providerOptions,
+  providerMetadata,
+});
+
 export const vRedactedReasoningPart = v.object({
   type: v.literal("redacted-reasoning"),
   data: v.string(),
@@ -83,6 +131,7 @@ export const vRedactedReasoningPart = v.object({
 export const vReasoningDetails = v.array(
   v.union(
     vReasoningPart,
+    vReasoningFilePart,
     v.object({
       type: v.literal("text"),
       text: v.string(),
@@ -197,8 +246,16 @@ export const vToolResultOutput = v.union(
           providerOptions,
         }),
         v.object({
+          type: v.literal("file"),
+          data: vFileData,
+          mediaType: v.string(),
+          filename: v.optional(v.string()),
+          providerOptions,
+        }),
+        v.object({
           type: v.literal("file-url"),
           url: v.string(),
+          mediaType: v.optional(v.string()),
           providerOptions,
         }),
         v.object({
@@ -212,6 +269,11 @@ export const vToolResultOutput = v.union(
            * name, e.g. 'openai' or 'anthropic'.
            */
           fileId: v.union(v.string(), v.record(v.string(), v.string())),
+          providerOptions,
+        }),
+        v.object({
+          type: v.literal("file-reference"),
+          providerReference: vProviderReference,
           providerOptions,
         }),
         v.object({
@@ -247,6 +309,14 @@ export const vToolResultOutput = v.union(
         }),
         v.object({
           /**
+           * Images that are referenced using a provider file reference.
+           */
+          type: v.literal("image-file-reference"),
+          providerReference: vProviderReference,
+          providerOptions,
+        }),
+        v.object({
+          /**
            * Custom content part. This can be used to implement
            * provider-specific content parts.
            */
@@ -271,6 +341,15 @@ export const vToolApprovalRequest = v.object({
    * ID of the tool call that the approval request is for.
    */
   toolCallId: v.string(),
+  /**
+   * Whether the approval decision was made automatically.
+   */
+  isAutomatic: v.optional(v.boolean()),
+  /**
+   * HMAC signature produced by AI SDK 7 when
+   * `experimental_toolApprovalSecret` is configured.
+   */
+  signature: v.optional(v.string()),
   /** @todo Should we continue to include? */
   providerMetadata,
   /** @todo Should we continue to include? */
@@ -332,8 +411,10 @@ export const vAssistantContent = v.union(
   v.array(
     v.union(
       vTextPart,
+      vCustomPart,
       vFilePart,
       vReasoningPart,
+      vReasoningFilePart,
       vRedactedReasoningPart,
       vToolCallPart,
       vToolResultPart,
@@ -380,9 +461,11 @@ export type Message = Infer<typeof vMessage>;
 
 export type MessageContentParts =
   | Infer<typeof vTextPart>
+  | Infer<typeof vCustomPart>
   | Infer<typeof vImagePart>
   | Infer<typeof vFilePart>
   | Infer<typeof vReasoningPart>
+  | Infer<typeof vReasoningFilePart>
   | Infer<typeof vRedactedReasoningPart>
   | Infer<typeof vToolCallPart>
   | Infer<typeof vToolResultPart>
@@ -516,6 +599,8 @@ export const vStorageOptions = v.object({
 });
 
 const vPromptFields = {
+  instructions: v.optional(v.string()),
+  /** @deprecated Use `instructions` instead. */
   system: v.optional(v.string()),
   prompt: v.optional(v.string()),
   messages: v.optional(v.array(vMessage)),

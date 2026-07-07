@@ -11,6 +11,7 @@ import {
   type ToolSet,
   type UserContent,
   type FileUIPart,
+  type ReasoningFileUIPart,
   type LanguageModelUsage,
   type CallWarning,
   type TextPart,
@@ -27,7 +28,9 @@ import {
   type Usage,
   type vFilePart,
   type vImagePart,
+  type vCustomPart,
   type vReasoningPart,
+  type vReasoningFilePart,
   type vRedactedReasoningPart,
   type vTextPart,
   type vToolCallPart,
@@ -44,7 +47,11 @@ import { MAX_FILE_SIZE, storeFile } from "./client/files.js";
 import type { Infer } from "convex/values";
 import {
   convertUint8ArrayToBase64,
+  type FileData,
+  type CustomPart,
   type ProviderOptions,
+  type ProviderReference,
+  type ReasoningFilePart,
   type ReasoningPart,
 } from "@ai-sdk/provider-utils";
 import { parse, validate } from "convex-helpers/validators";
@@ -235,8 +242,8 @@ export function serializeUsage(usage: LanguageModelUsage): Usage {
     promptTokens: usage.inputTokens ?? 0,
     completionTokens: usage.outputTokens ?? 0,
     totalTokens: usage.totalTokens ?? 0,
-    reasoningTokens: usage.reasoningTokens,
-    cachedInputTokens: usage.cachedInputTokens,
+    reasoningTokens: usage.outputTokenDetails?.reasoningTokens,
+    cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens,
   };
 }
 
@@ -245,18 +252,14 @@ export function toModelMessageUsage(usage: Usage): LanguageModelUsage {
     inputTokens: usage.promptTokens,
     outputTokens: usage.completionTokens,
     totalTokens: usage.totalTokens,
-    reasoningTokens: usage.reasoningTokens,
-    cachedInputTokens: usage.cachedInputTokens,
-    // These detail fields are required by LanguageModelUsage type but we don't
-    // have the granular data, so we provide empty objects with undefined values.
     inputTokenDetails: {
-      cacheReadTokens: undefined,
+      cacheReadTokens: usage.cachedInputTokens,
       cacheWriteTokens: undefined,
       noCacheTokens: undefined,
     },
     outputTokenDetails: {
       textTokens: undefined,
-      reasoningTokens: undefined,
+      reasoningTokens: usage.reasoningTokens,
     },
   };
 }
@@ -313,31 +316,32 @@ export async function serializeResponseMessages<TOOLS extends ToolSet>(
 }
 
 /**
- * Serialize the new response messages produced by this step.
+ * Serialize the response messages produced by this step.
  *
- * `step.response.messages` is cumulative across steps in AI SDK v6 — each
- * step's array contains all messages from prior steps too. Pass
- * `previousResponseMessageCount` (the prior step's `response.messages.length`,
- * or `0` for the first step) so we slice only the new tail. The parameter is
- * required: defaulting it would silently duplicate every prior message on
- * every multi-step save.
+ * AI SDK 7 returns `step.response.messages` scoped to the current step, so
+ * callers should pass the step as-is. Older v6 callers that pass a cumulative
+ * response array should migrate before using this helper.
  */
 export async function serializeNewMessagesInStep<TOOLS extends ToolSet>(
   ctx: ActionCtx,
   component: AgentComponent,
   step: StepResult<TOOLS>,
   model: ModelOrMetadata | undefined,
-  previousResponseMessageCount: number,
 ): Promise<{ messages: MessageWithMetadata[] }> {
-  const newMessages = step.response.messages.slice(previousResponseMessageCount);
   // Keep at least one message in the output so the step still anchors an
   // order slot — downstream `addMessages` relies on each step contributing a
   // row even when AI SDK produced no response messages.
   const messagesToSerialize: ModelMessage[] =
-    newMessages.length > 0
-      ? newMessages
+    step.response.messages.length > 0
+      ? step.response.messages
       : [{ role: "assistant" as const, content: [] }];
-  return serializeStepMessages(ctx, component, step, model, messagesToSerialize);
+  return serializeStepMessages(
+    ctx,
+    component,
+    step,
+    model,
+    messagesToSerialize,
+  );
 }
 
 async function serializeStepMessages<TOOLS extends ToolSet>(
@@ -355,7 +359,7 @@ async function serializeStepMessages<TOOLS extends ToolSet>(
     provider: model ? getProviderName(model) : undefined,
     providerMetadata: step.providerMetadata,
     reasoning: step.reasoningText,
-    reasoningDetails: step.reasoning,
+    reasoningDetails: step.reasoning.map(serializeReasoningDetail),
     usage: serializeUsage(step.usage),
     warnings: serializeWarnings(step.warnings),
     finishReason: step.finishReason,
@@ -377,6 +381,20 @@ async function serializeStepMessages<TOOLS extends ToolSet>(
   );
   // TODO: capture step.files separately?
   return { messages };
+}
+
+function serializeReasoningDetail(
+  part: ReasoningPart | ReasoningFilePart,
+): Infer<typeof vReasoningPart> | Infer<typeof vReasoningFilePart> {
+  if (part.type === "reasoning-file") {
+    return {
+      type: part.type,
+      data: serializeReasoningFileData(part.data),
+      mediaType: part.mediaType,
+      providerOptions: part.providerOptions,
+    };
+  }
+  return part;
 }
 
 export async function serializeObjectResult(
@@ -447,6 +465,13 @@ export async function serializeContent(
             ...metadata,
           } satisfies Infer<typeof vTextPart>;
         }
+        case "custom": {
+          return {
+            type: part.type,
+            kind: part.kind,
+            ...metadata,
+          } satisfies Infer<typeof vCustomPart>;
+        }
         case "image": {
           let image = serializeDataOrUrl(part.image);
           if (
@@ -471,14 +496,15 @@ export async function serializeContent(
           } satisfies Infer<typeof vImagePart>;
         }
         case "file": {
-          let data = serializeDataOrUrl(part.data);
-          if (data instanceof ArrayBuffer && data.byteLength > MAX_FILE_SIZE) {
+          let data = serializeFileData(part.data);
+          const dataBuffer = getSerializedFileDataBuffer(data);
+          if (dataBuffer && dataBuffer.byteLength > MAX_FILE_SIZE) {
             const { file } = await storeFile(
               ctx,
               component,
-              new Blob([data], { type: getMimeOrMediaType(part) }),
+              new Blob([dataBuffer], { type: getMimeOrMediaType(part) }),
             );
-            data = file.url;
+            data = { type: "url", url: file.url };
             fileIds.push(file.fileId);
           }
           return {
@@ -513,6 +539,14 @@ export async function serializeContent(
             ...metadata,
           } satisfies Infer<typeof vReasoningPart>;
         }
+        case "reasoning-file": {
+          return {
+            type: part.type,
+            data: serializeReasoningFileData(part.data),
+            mediaType: part.mediaType,
+            ...metadata,
+          } satisfies Infer<typeof vReasoningFilePart>;
+        }
         // Not in current generation output, but could be in historical messages
         case "redacted-reasoning": {
           return {
@@ -529,6 +563,10 @@ export async function serializeContent(
             type: part.type,
             approvalId: part.approvalId,
             toolCallId: part.toolCallId,
+            ...(part.isAutomatic !== undefined
+              ? { isAutomatic: part.isAutomatic }
+              : {}),
+            ...(part.signature !== undefined ? { signature: part.signature } : {}),
             ...metadata,
           } satisfies Infer<typeof vToolApprovalRequest>;
         }
@@ -572,6 +610,12 @@ export function fromModelMessageContent(content: Content): Message["content"] {
       switch (part.type) {
         case "text":
           return part satisfies Infer<typeof vTextPart>;
+        case "custom":
+          return {
+            type: part.type,
+            kind: part.kind,
+            ...metadata,
+          } satisfies Infer<typeof vCustomPart>;
         case "image":
           return {
             type: part.type,
@@ -582,7 +626,7 @@ export function fromModelMessageContent(content: Content): Message["content"] {
         case "file":
           return {
             type: part.type,
-            data: serializeDataOrUrl(part.data),
+            data: serializeFileData(part.data),
             filename: part.filename,
             mediaType: getMimeOrMediaType(part)!,
             ...metadata,
@@ -607,11 +651,22 @@ export function fromModelMessageContent(content: Content): Message["content"] {
             text: part.text,
             ...metadata,
           } satisfies Infer<typeof vReasoningPart>;
+        case "reasoning-file":
+          return {
+            type: part.type,
+            data: serializeReasoningFileData(part.data),
+            mediaType: part.mediaType,
+            ...metadata,
+          } satisfies Infer<typeof vReasoningFilePart>;
         case "tool-approval-request":
           return {
             type: part.type,
             approvalId: part.approvalId,
             toolCallId: part.toolCallId,
+            ...(part.isAutomatic !== undefined
+              ? { isAutomatic: part.isAutomatic }
+              : {}),
+            ...(part.signature !== undefined ? { signature: part.signature } : {}),
             ...metadata,
           } satisfies Infer<typeof vToolApprovalRequest>;
         case "tool-approval-response":
@@ -656,6 +711,12 @@ export function toModelMessageContent(
             text: part.text,
             ...metadata,
           } satisfies TextPart;
+        case "custom":
+          return {
+            type: part.type,
+            kind: part.kind as `${string}.${string}`,
+            ...metadata,
+          } satisfies CustomPart;
         case "image":
           return {
             type: part.type,
@@ -666,7 +727,7 @@ export function toModelMessageContent(
         case "file":
           return {
             type: part.type,
-            data: toModelMessageDataOrUrl(part.data),
+            data: toModelMessageFileData(part.data),
             filename: part.filename,
             mediaType: getMimeOrMediaType(part)!,
             ...metadata,
@@ -692,6 +753,13 @@ export function toModelMessageContent(
             text: part.text,
             ...metadata,
           } satisfies ReasoningPart;
+        case "reasoning-file":
+          return {
+            type: part.type,
+            data: toModelMessageReasoningFileData(part.data),
+            mediaType: part.mediaType,
+            ...metadata,
+          } satisfies ReasoningFilePart;
         case "redacted-reasoning":
           // TODO: should we just drop this?
           return {
@@ -718,6 +786,10 @@ export function toModelMessageContent(
             type: part.type,
             approvalId: part.approvalId,
             toolCallId: part.toolCallId,
+            ...(part.isAutomatic !== undefined
+              ? { isAutomatic: part.isAutomatic }
+              : {}),
+            ...(part.signature !== undefined ? { signature: part.signature } : {}),
             ...metadata,
           } satisfies Infer<typeof vToolApprovalRequest>;
         case "tool-approval-response":
@@ -746,11 +818,30 @@ export function normalizeToolOutput(
     };
   }
   if (validate(vToolResultOutput, result)) {
-    return result;
+    return normalizeToolResultOutput(result as ToolResultPart["output"]);
   }
   return {
     type: "json",
     value: result ?? null,
+  };
+}
+
+function normalizeToolResultOutput(output: any): any {
+  if (output?.type !== "content") {
+    return output;
+  }
+  return {
+    ...output,
+    value: output.value.map((part: any) => {
+      if (part.type === "media") {
+        return {
+          type: "file",
+          data: { type: "data", data: part.data },
+          mediaType: part.mediaType,
+        };
+      }
+      return part;
+    }),
   };
 }
 
@@ -765,7 +856,7 @@ function normalizeToolResult(
     type: part.type,
     output: part.output
       ? validate(vToolResultOutput, part.output)
-        ? (part.output as any)
+        ? normalizeToolResultOutput(part.output as any)
         : normalizeToolOutput(JSON.stringify(part.output))
       : normalizeToolOutput("result" in part ? part.result : undefined),
     toolCallId: part.toolCallId,
@@ -843,14 +934,51 @@ export function guessMimeType(buf: ArrayBuffer | string): string {
   return "application/octet-stream";
 }
 
+type SerializedDataOrUrl = ArrayBuffer | string | ProviderReference;
+type SerializedFileData =
+  | SerializedDataOrUrl
+  | { type: "data"; data: ArrayBuffer | string }
+  | { type: "url"; url: string }
+  | { type: "reference"; reference: ProviderReference }
+  | { type: "text"; text: string };
+type SerializedReasoningFileData =
+  | ArrayBuffer
+  | string
+  | { type: "data"; data: ArrayBuffer | string }
+  | { type: "url"; url: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isTaggedSerializedFileData(
+  value: unknown,
+): value is Extract<SerializedFileData, { type: string }> {
+  return isRecord(value) && typeof value.type === "string";
+}
+
+function isTaggedSerializedReasoningFileData(
+  value: unknown,
+): value is Extract<SerializedReasoningFileData, { type: string }> {
+  return isRecord(value) && typeof value.type === "string";
+}
+
+function isProviderReference(value: unknown): value is ProviderReference {
+  return (
+    isRecord(value) &&
+    !(value instanceof URL) &&
+    !(value instanceof ArrayBuffer) &&
+    !ArrayBuffer.isView(value) &&
+    !("type" in value)
+  );
+}
+
 /**
- * Serialize an AI SDK `DataContent` or `URL` to a Convex-serializable format.
- * @param dataOrUrl - The data or URL to serialize.
- * @returns The serialized data as an ArrayBuffer or the URL as a string.
+ * Serialize AI SDK data, URLs, and provider references to Convex-safe values.
  */
 export function serializeDataOrUrl(
-  dataOrUrl: DataContent | URL,
-): ArrayBuffer | string {
+  dataOrUrl: DataContent | URL | ProviderReference,
+): SerializedDataOrUrl {
   if (typeof dataOrUrl === "string") {
     return dataOrUrl;
   }
@@ -860,16 +988,91 @@ export function serializeDataOrUrl(
   if (dataOrUrl instanceof URL) {
     return dataOrUrl.toString();
   }
+  if (isProviderReference(dataOrUrl)) {
+    return dataOrUrl;
+  }
+  if (!ArrayBuffer.isView(dataOrUrl)) {
+    return dataOrUrl as ProviderReference;
+  }
   return dataOrUrl.buffer.slice(
     dataOrUrl.byteOffset,
     dataOrUrl.byteOffset + dataOrUrl.byteLength,
   ) as ArrayBuffer;
 }
 
+function serializeFileData(
+  data: FileData | DataContent | URL | ProviderReference | SerializedFileData,
+): SerializedFileData {
+  if (!isRecord(data) || typeof data.type !== "string") {
+    return serializeDataOrUrl(data as DataContent | URL | ProviderReference);
+  }
+  const tagged = data as any;
+  switch (tagged.type) {
+    case "data":
+      return {
+        type: "data",
+        data: serializeDataOrUrl(tagged.data as DataContent) as
+          | string
+          | ArrayBuffer,
+      };
+    case "url":
+      return { type: "url", url: tagged.url.toString() };
+    case "reference":
+      return { type: "reference", reference: tagged.reference };
+    case "text":
+      return { type: "text", text: tagged.text };
+    default:
+      throw new Error(`Unsupported file data type: ${tagged.type}`);
+  }
+}
+
+function serializeReasoningFileData(
+  data: ReasoningFilePart["data"] | SerializedReasoningFileData,
+): SerializedReasoningFileData {
+  if (!isRecord(data) || typeof data.type !== "string") {
+    return serializeDataOrUrl(data as DataContent | URL) as
+      | ArrayBuffer
+      | string;
+  }
+  const tagged = data as any;
+  switch (tagged.type) {
+    case "data":
+      return {
+        type: "data",
+        data: serializeDataOrUrl(tagged.data as DataContent) as
+          | string
+          | ArrayBuffer,
+      };
+    case "url":
+      return { type: "url", url: tagged.url.toString() };
+    default:
+      throw new Error(`Unsupported reasoning-file data type: ${tagged.type}`);
+  }
+}
+
+function getSerializedFileDataBuffer(
+  data: SerializedFileData,
+): ArrayBuffer | undefined {
+  if (data instanceof ArrayBuffer) {
+    return data;
+  }
+  if (
+    isRecord(data) &&
+    data.type === "data" &&
+    data.data instanceof ArrayBuffer
+  ) {
+    return data.data;
+  }
+  return undefined;
+}
+
 export function toModelMessageDataOrUrl(
-  urlOrString: string | ArrayBuffer | URL | DataContent,
-): URL | DataContent {
+  urlOrString: string | ArrayBuffer | URL | DataContent | ProviderReference,
+): URL | DataContent | ProviderReference {
   if (urlOrString instanceof URL) {
+    return urlOrString;
+  }
+  if (isProviderReference(urlOrString)) {
     return urlOrString;
   }
   if (typeof urlOrString === "string") {
@@ -884,20 +1087,142 @@ export function toModelMessageDataOrUrl(
   return urlOrString;
 }
 
+function toModelMessageDataContent(data: string | ArrayBuffer): DataContent {
+  return data;
+}
+
+function toModelMessageFileData(
+  data: SerializedFileData | FileData | DataContent | URL | ProviderReference,
+): FileData | DataContent | URL | ProviderReference {
+  const serialized = serializeFileData(data);
+  if (!isTaggedSerializedFileData(serialized)) {
+    return toModelMessageDataOrUrl(serialized);
+  }
+  switch (serialized.type) {
+    case "data":
+      return {
+        type: "data",
+        data: toModelMessageDataContent(serialized.data),
+      };
+    case "url":
+      return { type: "url", url: new URL(serialized.url) };
+    case "reference":
+      return { type: "reference", reference: serialized.reference };
+    case "text":
+      return { type: "text", text: serialized.text };
+  }
+}
+
+function toModelMessageReasoningFileData(
+  data: SerializedReasoningFileData | ReasoningFilePart["data"],
+): ReasoningFilePart["data"] {
+  const serialized = serializeReasoningFileData(data);
+  if (!isTaggedSerializedReasoningFileData(serialized)) {
+    return toModelMessageDataOrUrl(serialized) as ReasoningFilePart["data"];
+  }
+  switch (serialized.type) {
+    case "data":
+      return {
+        type: "data",
+        data: toModelMessageDataContent(serialized.data),
+      };
+    case "url":
+      return { type: "url", url: new URL(serialized.url) };
+    default:
+      throw new Error(
+        `Unsupported reasoning-file data type: ${(serialized as any).type}`,
+      );
+  }
+}
+
 export function toUIFilePart(part: ImagePart | FilePart): FileUIPart {
-  const dataOrUrl = part.type === "image" ? part.image : part.data;
-  const url =
-    dataOrUrl instanceof ArrayBuffer
-      ? convertUint8ArrayToBase64(new Uint8Array(dataOrUrl))
-      : dataOrUrl.toString();
+  const serialized =
+    part.type === "image"
+      ? serializeDataOrUrl(part.image)
+      : serializeFileData(part.data);
+  const mediaType = part.mediaType!;
+  const { url, providerReference } = toUIFileData(serialized, mediaType);
 
   return {
     type: "file",
-    mediaType: part.mediaType!,
+    mediaType,
     filename: part.type === "file" ? part.filename : undefined,
     url,
+    providerReference,
     providerMetadata: part.providerOptions,
   };
+}
+
+export function toUIReasoningFilePart(
+  part: ReasoningFilePart,
+): ReasoningFileUIPart {
+  const serialized = serializeReasoningFileData(part.data);
+  return {
+    type: "reasoning-file",
+    mediaType: part.mediaType,
+    url: toUIFileData(serialized, part.mediaType).url,
+    providerMetadata: part.providerOptions,
+  };
+}
+
+function toUIFileData(
+  serialized: SerializedFileData | SerializedReasoningFileData,
+  mediaType: string,
+): { url: string; providerReference?: ProviderReference } {
+  if (serialized instanceof ArrayBuffer) {
+    return {
+      url: toDataUrl(
+        convertUint8ArrayToBase64(new Uint8Array(serialized)),
+        mediaType,
+      ),
+    };
+  }
+  if (typeof serialized === "string") {
+    return {
+      url: isUrlLike(serialized) ? serialized : toDataUrl(serialized, mediaType),
+    };
+  }
+  if (isProviderReference(serialized)) {
+    return { url: "about:blank", providerReference: serialized };
+  }
+  if (isRecord(serialized) && serialized.type === "data") {
+    return {
+      url: toDataUrl(
+        serialized.data instanceof ArrayBuffer
+          ? convertUint8ArrayToBase64(new Uint8Array(serialized.data))
+          : serialized.data,
+        mediaType,
+      ),
+    };
+  }
+  if (isRecord(serialized) && serialized.type === "url") {
+    return { url: serialized.url };
+  }
+  if (isRecord(serialized) && serialized.type === "reference") {
+    return { url: "about:blank", providerReference: serialized.reference };
+  }
+  if (isRecord(serialized) && serialized.type === "text") {
+    return {
+      url: `data:${mediaType};charset=utf-8,${encodeURIComponent(serialized.text)}`,
+    };
+  }
+  return { url: JSON.stringify(serialized) };
+}
+
+function toDataUrl(base64: string, mediaType: string): string {
+  if (base64.startsWith("data:")) {
+    return base64;
+  }
+  return `data:${mediaType};base64,${base64}`;
+}
+
+function isUrlLike(value: string): boolean {
+  return (
+    value.startsWith("http://") ||
+    value.startsWith("https://") ||
+    value.startsWith("data:") ||
+    value.startsWith("blob:")
+  );
 }
 
 // Currently unused

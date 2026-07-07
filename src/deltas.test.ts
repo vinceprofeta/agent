@@ -509,6 +509,124 @@ describe("mergeDeltas", () => {
     expect(msg.metadata).toEqual({ foo: "bar" });
   });
 
+  it("handles v7 custom, reasoning-file, dynamic tool, and approval chunks", () => {
+    const streamMessage = {
+      streamId: "s-v7-chunks",
+      status: "streaming" as const,
+      order: 0,
+      stepOrder: 0,
+      format: "UIMessageChunk" as const,
+      agentName: "a",
+    };
+    const chunks: UIMessageChunk[] = [
+      { type: "start" },
+      { type: "start-step" },
+      {
+        type: "custom",
+        kind: "openai.item",
+        providerMetadata: { openai: { itemId: "item-123" } },
+      },
+      {
+        type: "reasoning-file",
+        mediaType: "application/json",
+        url: "data:application/json;base64,e30=",
+        providerMetadata: { openai: { fileId: "reasoning-file-1" } },
+      },
+      {
+        type: "tool-input-start",
+        toolCallId: "dyn-1",
+        toolName: "server.search",
+        dynamic: true,
+        providerExecuted: true,
+        title: "Server search",
+        toolMetadata: { serverName: "mcp-main" },
+        providerMetadata: { openai: { callId: "call-1" } },
+      },
+      {
+        type: "tool-input-delta",
+        toolCallId: "dyn-1",
+        inputTextDelta: '{"query":"ai sdk 7"}',
+      },
+      {
+        type: "tool-input-available",
+        toolCallId: "dyn-1",
+        toolName: "server.search",
+        dynamic: true,
+        providerExecuted: true,
+        title: "Server search",
+        toolMetadata: { serverName: "mcp-main" },
+        input: { query: "ai sdk 7" },
+      },
+      {
+        type: "tool-approval-request",
+        approvalId: "approval-1",
+        toolCallId: "dyn-1",
+        isAutomatic: true,
+        signature: "signed-request",
+      },
+      {
+        type: "tool-approval-response",
+        approvalId: "approval-1",
+        approved: true,
+        reason: "policy allowed",
+        providerExecuted: true,
+      },
+      {
+        type: "tool-output-available",
+        toolCallId: "dyn-1",
+        output: { results: 3 },
+        providerExecuted: true,
+        preliminary: true,
+        providerMetadata: { openai: { resultId: "result-1" } },
+      },
+    ];
+
+    const { message } = applyUIMessageChunksIncremental(
+      blankUIMessage(streamMessage, "thread-v7-chunks"),
+      chunks,
+      emptyIncrementalStreamState(),
+    );
+
+    expect(message.parts).toEqual(
+      expect.arrayContaining([
+        {
+          type: "custom",
+          kind: "openai.item",
+          providerMetadata: { openai: { itemId: "item-123" } },
+        },
+        {
+          type: "reasoning-file",
+          mediaType: "application/json",
+          url: "data:application/json;base64,e30=",
+          providerMetadata: { openai: { fileId: "reasoning-file-1" } },
+        },
+      ]),
+    );
+    const toolPart = message.parts.find(
+      (p) => p.type === "dynamic-tool" && p.toolCallId === "dyn-1",
+    ) as any;
+    expect(toolPart).toMatchObject({
+      type: "dynamic-tool",
+      toolName: "server.search",
+      state: "output-available",
+      input: { query: "ai sdk 7" },
+      output: { results: 3 },
+      preliminary: true,
+      providerExecuted: true,
+      title: "Server search",
+      toolMetadata: { serverName: "mcp-main" },
+      approval: {
+        id: "approval-1",
+        approved: true,
+        reason: "policy allowed",
+        isAutomatic: true,
+        signature: "signed-request",
+      },
+      callProviderMetadata: { openai: { callId: "call-1" } },
+      resultProviderMetadata: { openai: { resultId: "result-1" } },
+    });
+  });
+
   it("tracks concurrent text parts by id across batches", async () => {
     const streamMessage = {
       streamId: "s-multi-text",

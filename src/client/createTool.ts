@@ -3,9 +3,12 @@ import type {
   FlexibleSchema,
   ModelMessage,
   Tool,
+  ToolApprovalConfiguration,
+  ToolApprovalStatus,
   ToolExecutionOptions,
   ToolSet,
 } from "ai";
+import type { Context } from "@ai-sdk/provider-utils";
 import { tool } from "ai";
 import type { GenericActionCtx, GenericDataModel } from "convex/server";
 import type { ProviderOptions } from "../validators.js";
@@ -53,6 +56,8 @@ export type ToolNeedsApprovalFunctionCtx<
      * Experimental (can break in patch releases).
      */
     experimental_context?: unknown;
+    runtimeContext?: unknown;
+    toolContext?: unknown;
   },
 ) => boolean | PromiseLike<boolean>;
 
@@ -63,7 +68,7 @@ export type ToolExecuteFunctionCtx<
 > = (
   ctx: Ctx,
   input: INPUT,
-  options: ToolExecutionOptions,
+  options: ToolExecutionOptions<any>,
 ) => AsyncIterable<OUTPUT> | PromiseLike<OUTPUT>;
 
 type NeverOptional<N, T> = 0 extends 1 & N
@@ -186,7 +191,7 @@ export function createTool<INPUT, OUTPUT, Ctx extends ToolCtx = ToolCtx>(
        */
       onInputStart?: (
         ctx: Ctx,
-        options: ToolExecutionOptions,
+        options: ToolExecutionOptions<any>,
       ) => void | PromiseLike<void>;
       /**
        * Optional function that is called when an argument streaming delta is available.
@@ -194,7 +199,7 @@ export function createTool<INPUT, OUTPUT, Ctx extends ToolCtx = ToolCtx>(
        */
       onInputDelta?: (
         ctx: Ctx,
-        options: { inputTextDelta: string } & ToolExecutionOptions,
+        options: { inputTextDelta: string } & ToolExecutionOptions<any>,
       ) => void | PromiseLike<void>;
       /**
        * Optional function that is called when a tool call can be started,
@@ -204,7 +209,7 @@ export function createTool<INPUT, OUTPUT, Ctx extends ToolCtx = ToolCtx>(
         ctx: Ctx,
         options: {
           input: [INPUT] extends [never] ? unknown : INPUT;
-        } & ToolExecutionOptions,
+        } & ToolExecutionOptions<any>,
       ) => void | PromiseLike<void>;
     } & ToolOutputPropertiesCtx<INPUT, OUTPUT, Ctx> & {
       /**
@@ -234,7 +239,7 @@ export function createTool<INPUT, OUTPUT, Ctx extends ToolCtx = ToolCtx>(
         },
       ) => ToolResultOutput | PromiseLike<ToolResultOutput>;
     },
-): Tool<INPUT, OUTPUT> {
+): Tool<INPUT, OUTPUT, any> {
   // Runtime backwards compat - types will show errors but runtime still works
   const inputSchema = def.inputSchema ?? (def as any).args;
   if (!inputSchema)
@@ -260,36 +265,20 @@ export function createTool<INPUT, OUTPUT, Ctx extends ToolCtx = ToolCtx>(
         " handler function, define an outputSchema, or both",
     );
 
-  const t = tool<INPUT, OUTPUT>({
+  const t = tool<INPUT, OUTPUT, any>({
     type: "function",
-    __acceptsCtx: true,
-    ctx: def.ctx,
     description: def.description,
     title: def.title,
     providerOptions: def.providerOptions,
     inputSchema,
     inputExamples: def.inputExamples,
-    needsApproval(this: Tool<INPUT, OUTPUT>, input, options) {
-      const needsApproval = def.needsApproval;
-      if (!needsApproval || typeof needsApproval === "boolean")
-        return Boolean(needsApproval);
-
-      if (!getCtx(this)) {
-        throw new Error(
-          "To use a Convex tool, you must either provide the ctx" +
-            " at definition time (dynamically in an action), or use the Agent to" +
-            " call it (which injects the ctx, userId and threadId)",
-        );
-      }
-      return needsApproval(getCtx(this), input, options);
-    },
     strict: def.strict,
     ...(executeHandler
       ? {
           execute(
-            this: Tool<INPUT, OUTPUT>,
+            this: Tool<INPUT, OUTPUT, any>,
             input: INPUT,
-            options: ToolExecutionOptions,
+            options: ToolExecutionOptions<any>,
           ) {
             if (!getCtx(this)) {
               throw new Error(
@@ -303,55 +292,135 @@ export function createTool<INPUT, OUTPUT, Ctx extends ToolCtx = ToolCtx>(
         }
       : {}),
     outputSchema: def.outputSchema,
-  });
+  }) as ConvexTool<INPUT, OUTPUT, Ctx>;
+  t.__acceptsCtx = true;
+  t.ctx = def.ctx;
+  t.__convexNeedsApproval = def.needsApproval;
   if (def.onInputStart) {
     const origOnInputStart = def.onInputStart;
-    t.onInputStart = function (this: Tool<INPUT, OUTPUT>, options) {
+    t.onInputStart = function (this: Tool<INPUT, OUTPUT, any>, options) {
       return origOnInputStart.call(this, getCtx(this), options);
     };
   }
   if (def.onInputDelta) {
     const origOnInputDelta = def.onInputDelta;
-    t.onInputDelta = function (this: Tool<INPUT, OUTPUT>, options) {
+    t.onInputDelta = function (this: Tool<INPUT, OUTPUT, any>, options) {
       return origOnInputDelta.call(this, getCtx(this), options);
     };
   }
   if (def.onInputAvailable) {
     const origOnInputAvailable = def.onInputAvailable;
-    t.onInputAvailable = function (this: Tool<INPUT, OUTPUT>, options) {
+    t.onInputAvailable = function (this: Tool<INPUT, OUTPUT, any>, options) {
       return origOnInputAvailable.call(this, getCtx(this), options);
     };
   }
   if (def.toModelOutput) {
     const origToModelOutput = def.toModelOutput;
-    t.toModelOutput = function (this: Tool<INPUT, OUTPUT>, options) {
+    t.toModelOutput = function (this: Tool<INPUT, OUTPUT, any>, options) {
       return origToModelOutput.call(this, getCtx(this), options);
     };
   }
   return t;
 }
 
+type ConvexTool<INPUT, OUTPUT, Ctx extends ToolCtx = ToolCtx> = Tool<
+  INPUT,
+  OUTPUT,
+  any
+> & {
+  __acceptsCtx?: true;
+  __convexNeedsApproval?:
+    | boolean
+    | ToolNeedsApprovalFunctionCtx<
+        [INPUT] extends [never] ? unknown : INPUT,
+        Ctx
+      >;
+  ctx?: Ctx;
+};
+
 function getCtx<Ctx extends ToolCtx>(tool: any): Ctx {
   return (tool as { ctx: Ctx }).ctx;
 }
 
-export function wrapTools(
+function requireCtx<Ctx extends ToolCtx>(tool: ConvexTool<any, any, Ctx>): Ctx {
+  const ctx = getCtx<Ctx>(tool);
+  if (!ctx) {
+    throw new Error(
+      "To use a Convex tool, you must either provide the ctx" +
+        " at definition time (dynamically in an action), or use the Agent to" +
+        " call it (which injects the ctx, userId and threadId)",
+    );
+  }
+  return ctx;
+}
+
+function toApprovalStatus(needsApproval: boolean): ToolApprovalStatus {
+  return needsApproval ? "user-approval" : "not-applicable";
+}
+
+type ConvexToolApprovalFunction = (
+  input: unknown,
+  options: {
+    toolCallId: string;
+    messages: ModelMessage[];
+    runtimeContext?: unknown;
+    toolContext?: unknown;
+  },
+) => Promise<ToolApprovalStatus>;
+
+export function wrapTools<TOOLS extends ToolSet = ToolSet>(
   ctx: ToolCtx,
   ...toolSets: (ToolSet | undefined)[]
-): ToolSet {
+): {
+  tools: TOOLS;
+  toolApproval?: ToolApprovalConfiguration<TOOLS, Context>;
+} {
   const output = {} as ToolSet;
+  const toolApproval: Record<
+    string,
+    ToolApprovalStatus | ConvexToolApprovalFunction
+  > = {};
   for (const toolSet of toolSets) {
     if (!toolSet) {
       continue;
     }
     for (const [name, tool] of Object.entries(toolSet)) {
-      if (tool && !(tool as any).__acceptsCtx) {
+      if (tool && !(tool as ConvexTool<any, any>).__acceptsCtx) {
         output[name] = tool;
       } else {
-        const out = { ...tool, ctx };
+        const out = { ...tool, ctx } as ConvexTool<any, any>;
         output[name] = out;
+        const needsApproval = (tool as ConvexTool<any, any>)
+          .__convexNeedsApproval;
+        if (typeof needsApproval === "boolean") {
+          if (needsApproval) {
+            toolApproval[name] = toApprovalStatus(needsApproval);
+          }
+        } else if (needsApproval) {
+          toolApproval[name] = async (
+            input: unknown,
+            options: {
+              toolCallId: string;
+              messages: ModelMessage[];
+              runtimeContext?: unknown;
+              toolContext?: unknown;
+            },
+          ) =>
+            toApprovalStatus(
+              await needsApproval(requireCtx(out), input, {
+                ...options,
+                experimental_context: options.runtimeContext,
+              }),
+            );
+        }
       }
     }
   }
-  return output;
+  return {
+    tools: output as TOOLS,
+    toolApproval:
+      Object.keys(toolApproval).length > 0
+        ? (toolApproval as ToolApprovalConfiguration<TOOLS, Context>)
+        : undefined,
+  };
 }

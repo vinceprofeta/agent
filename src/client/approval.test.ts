@@ -9,7 +9,7 @@ import type {
 import { anyApi, actionGeneric, mutationGeneric } from "convex/server";
 import { v } from "convex/values";
 import { defineSchema } from "convex/server";
-import { stepCountIs, type LanguageModelUsage } from "ai";
+import { isStepCount, type LanguageModelUsage } from "ai";
 import { components, initConvexTest } from "./setup.test.js";
 import { z } from "zod/v4";
 import { mockModel } from "./mockModel.js";
@@ -77,7 +77,7 @@ const approvalAgent = new Agent(components.agent, {
   tools: { deleteFile: deleteFileTool },
   languageModel: mockModel({
     contentSteps: [
-      // Step 1: model makes a tool call (LanguageModelV3 uses `input` as JSON string)
+      // Step 1: model makes a tool call.
       [
         {
           type: "tool-call",
@@ -90,7 +90,7 @@ const approvalAgent = new Agent(components.agent, {
       [{ type: "text", text: "Done! I deleted test.txt." }],
     ],
   }),
-  stopWhen: stepCountIs(5),
+  stopWhen: isStepCount(5),
   usageHandler: testUsageHandler,
 });
 
@@ -111,7 +111,7 @@ const denialAgent = new Agent(components.agent, {
       [{ type: "text", text: "OK, I won't delete that file." }],
     ],
   }),
-  stopWhen: stepCountIs(5),
+  stopWhen: isStepCount(5),
   usageHandler: testUsageHandler,
 });
 
@@ -300,7 +300,7 @@ const multiToolAgent = new Agent(components.agent, {
       ],
     ],
   }),
-  stopWhen: stepCountIs(5),
+  stopWhen: isStepCount(5),
   usageHandler: testUsageHandler,
 });
 
@@ -432,18 +432,17 @@ describe("Tool Approval Workflow", () => {
     // Second call: tool-result + assistant text
     expect(result.secondSavedCount).toBeGreaterThanOrEqual(1);
     // Thread should have (ascending): user, assistant(tool-call+approval),
-    // tool(approval-response), tool(tool-result), assistant(text)
+    // tool(approval-response + tool-result), assistant(text)
     // listMessages returns descending order:
     expect(result.threadMessageRoles).toEqual([
       "assistant", // final text
-      "tool", // tool-result
-      "tool", // approval-response
+      "tool", // approval-response + tool-result
       "assistant", // tool-call + approval-request
       "user", // prompt
     ]);
     // Usage handler should be called for each generateText call
     expect(result.usageCallCount).toBeGreaterThanOrEqual(2);
-    // Usage data should include AI SDK v6 detail fields
+    // Usage data should include AI SDK 7 detail fields.
     expect(result.lastUsage).toBeDefined();
     expect(result.lastUsage!.inputTokenDetails).toBeDefined();
     expect(result.lastUsage!.outputTokenDetails).toBeDefined();
@@ -459,10 +458,9 @@ describe("Tool Approval Workflow", () => {
     expect(result.secondText).toBe("OK, I won't delete that file.");
     // Same message ordering as approve flow:
     // user, assistant(tool-call+approval), tool(denial-response),
-    // tool(execution-denied result), assistant(text)
+    // execution-denied result), assistant(text)
     expect(result.threadMessageRoles).toEqual([
       "assistant",
-      "tool",
       "tool",
       "assistant",
       "user",
@@ -483,14 +481,12 @@ describe("Tool Approval Workflow", () => {
     expect(result.secondText).toBe(
       "Done! Deleted old.txt and renamed a.txt to b.txt.",
     );
-    // Both approval responses should be merged into one tool message
-    // (write-time merge in respondToToolCallApproval via findApprovalContext)
+    // Approval responses and tool results are merged into one tool message.
     // Thread: user, assistant(2 tool-calls + 2 approvals),
-    //         tool(2 approval-responses merged), tool(2 tool-results), assistant(text)
+    //         tool(2 approval-responses + 2 tool-results), assistant(text)
     expect(result.threadMessageRoles).toEqual([
       "assistant", // final text
-      "tool", // tool-results
-      "tool", // approval-responses (merged)
+      "tool", // approval-responses + tool-results
       "assistant", // tool-calls + approval-requests
       "user", // prompt
     ]);

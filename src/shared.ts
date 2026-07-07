@@ -1,6 +1,7 @@
 import type {
   FilePart,
   ImagePart,
+  ReasoningFilePart,
   ReasoningPart,
   ToolCallPart,
   ToolResultPart,
@@ -53,6 +54,7 @@ export function joinText(
     | ImagePart
     | FilePart
     | ReasoningPart
+    | ReasoningFilePart
     | ToolCallPart
     | ToolResultPart
     | MessageContentParts

@@ -1,4 +1,5 @@
 import type {
+  Context,
   FlexibleSchema,
   InferSchema,
   ModelMessage,
@@ -18,8 +19,10 @@ import type {
   streamText,
   StreamTextResult,
   ToolSet,
-  CallSettings,
   generateObject,
+  Instructions,
+  LanguageModelCallOptions,
+  RequestOptions,
 } from "ai";
 
 export interface Output<_T = any, _P = any, _E = any> {
@@ -44,19 +47,18 @@ import type {
 import type { StreamingOptions } from "./streaming.js";
 import type { ComponentApi } from "../component/_generated/component.js";
 
-/**
- * Type-level check that ensures models are from AI SDK v6.
- * If a v5 model (LanguageModelV2) is passed, TypeScript will show the error message string.
- */
-type AssertAISDKv6<T> = T extends { specificationVersion: "v3" }
-  ? T
-  : "⚠️ @convex-dev/agent v0.6.0 requires AI SDK v6. Update your dependencies: npm install ai@^6.0.35 @ai-sdk/openai@^3.0.10 (or other provider). See: node_modules/@convex-dev/agent/MIGRATION.md";
+export type AgentCallSettings = LanguageModelCallOptions &
+  Omit<RequestOptions, "timeout">;
 
 export type AgentPrompt = {
   /**
-   * System message to include in the prompt. Overwrites Agent instructions.
+   * Instructions to include in the prompt. Overwrites Agent instructions.
    */
-  system?: string;
+  instructions?: Instructions;
+  /**
+   * @deprecated Use `instructions` instead.
+   */
+  system?: Instructions;
   /**
    * A prompt. It can be either a text prompt or a list of messages.
    * If used with `promptMessageId`, it will be used in place of that
@@ -97,7 +99,7 @@ export type AgentPrompt = {
 export type Config = {
   /**
    * The LLM model to use for generating / streaming text and objects.
-   * Requires AI SDK v6 (@ai-sdk/* packages v3.x).
+   * Requires AI SDK v7 (@ai-sdk/* packages v4.x).
    *
    * @example
    * import { openai } from "@ai-sdk/openai"
@@ -105,7 +107,7 @@ export type Config = {
    *   languageModel: openai.chat("gpt-4o-mini"),
    * })
    */
-  languageModel?: AssertAISDKv6<LanguageModel>;
+  languageModel?: LanguageModel;
   /**
    * @deprecated Use `embeddingModel` instead.
    */
@@ -161,7 +163,7 @@ export type Config = {
    * This can be overridden at each generate/stream callsite on a per-field
    * basis. To clear a default setting, you'll need to pass `undefined`.
    */
-  callSettings?: CallSettings;
+  callSettings?: AgentCallSettings;
   /**
    * The maximum number of steps to allow for a single generation.
    *
@@ -342,7 +344,9 @@ export type RawRequestResponseHandler = (
     threadId: string | undefined;
     agentName: string | undefined;
     request: LanguageModelRequestMetadata;
-    response: LanguageModelResponseMetadata;
+    response:
+      | LanguageModelResponseMetadata
+      | Omit<LanguageModelResponseMetadata, "messages">;
   },
 ) => void | Promise<void>;
 
@@ -354,7 +358,11 @@ export type TextArgs<
   OUTPUT extends Output<any, any, any> = never,
 > = Omit<
   Parameters<
-    typeof generateText<TOOLS extends undefined ? AgentTools : TOOLS, OUTPUT>
+    typeof generateText<
+      TOOLS extends undefined ? AgentTools : TOOLS,
+      Context,
+      OUTPUT
+    >
   >[0],
   "model" | "prompt" | "messages"
 > & {
@@ -371,7 +379,11 @@ export type StreamingTextArgs<
   OUTPUT extends Output<any, any, any> = never,
 > = Omit<
   Parameters<
-    typeof streamText<TOOLS extends undefined ? AgentTools : TOOLS, OUTPUT>
+    typeof streamText<
+      TOOLS extends undefined ? AgentTools : TOOLS,
+      Context,
+      OUTPUT
+    >
   >[0],
   "model" | "prompt" | "messages"
 > & {
@@ -491,7 +503,11 @@ export interface Thread<DefaultTools extends ToolSet> {
       TextArgs<TOOLS extends undefined ? DefaultTools : TOOLS, TOOLS, OUTPUT>,
     options?: Options,
   ): Promise<
-    GenerateTextResult<TOOLS extends undefined ? DefaultTools : TOOLS, OUTPUT> &
+    GenerateTextResult<
+      TOOLS extends undefined ? DefaultTools : TOOLS,
+      Context,
+      OUTPUT
+    > &
       ThreadOutputMetadata
   >;
 
@@ -529,7 +545,11 @@ export interface Thread<DefaultTools extends ToolSet> {
       saveStreamDeltas?: boolean | StreamingOptions;
     },
   ): Promise<
-    StreamTextResult<TOOLS extends undefined ? DefaultTools : TOOLS, OUTPUT> &
+    StreamTextResult<
+      TOOLS extends undefined ? DefaultTools : TOOLS,
+      Context,
+      OUTPUT
+    > &
       ThreadOutputMetadata
   >;
   /**

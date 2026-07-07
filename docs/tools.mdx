@@ -31,7 +31,7 @@ tools in a context that is convenient.
 ## Using tools
 
 The Agent component will automatically handle passing tool call results back in
-and re-generating if you pass `stopWhen: stepCountIs(num)` where `num > 1` to
+and re-generating if you pass `stopWhen: isStepCount(num)` where `num > 1` to
 `generateText` or `streamText`.
 
 The tool call and result will be stored as messages in the thread associated
@@ -47,12 +47,12 @@ There are two ways to create a tool that has access to the Convex context.
 ```ts
 export const ideaSearch = createTool({
   description: "Search for ideas in the database",
-  args: z.object({ query: z.string().describe("The query to search for") }),
-  handler: async (ctx, args, options): Promise<Array<Idea>> => {
+  inputSchema: z.object({ query: z.string().describe("The query to search for") }),
+  execute: async (ctx, input, options): Promise<Array<Idea>> => {
     // ctx has agent, userId, threadId, messageId
     // as well as ActionCtx properties like auth, storage, runMutation, and runAction
     const ideas = await ctx.runQuery(api.ideas.searchIdeas, {
-      query: args.query,
+      query: input.query,
     });
     console.log("found ideas", ideas);
     return ideas;
@@ -74,8 +74,14 @@ async function createTool(ctx: ActionCtx, teamId: Id<"teams">) {
 }
 ```
 
-In both cases, the args and options match the underlying AI SDK's `tool`
+In both cases, the input and options match the underlying AI SDK's `tool`
 function.
+
+You can also pass ordinary AI SDK tools directly, including `tool`,
+`dynamicTool`, and provider-defined or provider-executed tools such as web
+search, code execution, computer use, or MCP tools exposed by a provider. Use
+`createTool` only when you want Convex to inject `ctx`, `userId`, `threadId`,
+and `messageId` into a server-executed tool.
 
 If you run into type errors, ensure you're annotating the return type of the
 execute function, and if necessary, the return type of the `handler`s of any
@@ -114,9 +120,9 @@ Then, in your tools, you can use the `orgId` field.
 type MyCtx = ToolCtx & { orgId: string };
 
 const myTool = createTool({
-  args: z.object({ ... }),
+  inputSchema: z.object({ ... }),
   description: "...",
-  handler: async (ctx: MyCtx, args) => {
+  execute: async (ctx: MyCtx, input) => {
     // use ctx.orgId
   },
 });
@@ -142,14 +148,14 @@ to the parent thread.
 ```ts
 const llmTool = createTool({
   description: "Ask a question to some LLM",
-  args: z.object({
+  inputSchema: z.object({
     message: z.string().describe("The message to ask the LLM"),
   }),
-  handler: async (ctx, args): Promise<string> => {
+  execute: async (ctx, input, options): Promise<string> => {
     const result = await generateText({
-      system: "You are a helpful assistant.",
+      instructions: "You are a helpful assistant.",
       // Pass through all messages from the current generation
-      prompt: [...options.messages, { role: "user", content: args.message }],
+      prompt: [...options.messages, { role: "user", content: input.message }],
       model: myLanguageModel,
     });
     return result.text;
@@ -162,16 +168,16 @@ const llmTool = createTool({
 ```ts
 const agentTool = createTool({
   description: `Ask a question to agent ${agent.name}`,
-  args: z.object({
+  inputSchema: z.object({
     message: z.string().describe("The message to ask the agent"),
   }),
-  handler: async (ctx, args, options): Promise<string> => {
+  execute: async (ctx, input, options): Promise<string> => {
     const { userId } = ctx;
     const { thread } = await agent.createThread(ctx, { userId });
     const result = await thread.generateText(
       {
         // Pass through all messages from the current generation
-        prompt: [...options.messages, { role: "user", content: args.message }],
+        prompt: [...options.messages, { role: "user", content: input.message }],
       },
       // Save all the messages from the current generation to this thread.
       { storageOptions: { saveMessages: "all" } },

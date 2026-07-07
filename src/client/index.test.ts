@@ -21,7 +21,7 @@ import type {
 } from "convex/server";
 import { v } from "convex/values";
 import { defineSchema } from "convex/server";
-import { stepCountIs } from "ai";
+import { isStepCount } from "ai";
 import { components, initConvexTest } from "./setup.test.js";
 import { z } from "zod/v4";
 import { mockModel } from "./mockModel.js";
@@ -86,7 +86,7 @@ const saveStepAgent = new Agent(components.agent, {
       [{ type: "text", text: "done" }],
     ],
   }),
-  stopWhen: stepCountIs(5),
+  stopWhen: isStepCount(5),
 });
 
 export const replayStepsViaSaveStep = action({
@@ -101,11 +101,14 @@ export const replayStepsViaSaveStep = action({
     const { threadId } = await saveStepAgent.createThread(ctx, {
       userId: "ss-replay",
     });
-    const { messageId: promptMessageId } = await saveStepAgent.saveMessage(ctx, {
-      threadId,
-      message: { role: "user", content: "echo hi" },
-      skipEmbeddings: true,
-    });
+    const { messageId: promptMessageId } = await saveStepAgent.saveMessage(
+      ctx,
+      {
+        threadId,
+        message: { role: "user", content: "echo hi" },
+        skipEmbeddings: true,
+      },
+    );
     let previousStep: (typeof steps)[number] | undefined;
     for (const step of steps) {
       await saveStepAgent.saveStep(ctx, {
@@ -260,13 +263,17 @@ describe("Agent thick client", () => {
     expect(toolCalls).toBe(1);
     expect(toolResults).toBe(1);
   });
-  test("saveStep without previousStep duplicates prior messages", async () => {
+  test("saveStep ignores previousStep and does not duplicate prior messages", async () => {
     const t = initConvexTest(schema);
     const res = await t.action(testApi.replayStepsViaSaveStep, {
       withWatermark: false,
     });
     const toolCalls = res.contentTypes.filter((t) => t === "tool-call").length;
-    expect(toolCalls).toBeGreaterThan(1);
+    const toolResults = res.contentTypes.filter(
+      (t) => t === "tool-result",
+    ).length;
+    expect(toolCalls).toBe(1);
+    expect(toolResults).toBe(1);
   });
 });
 
@@ -350,7 +357,7 @@ describe("Agent option variations and normal behavior", () => {
       instructions: "Test instructions",
       contextOptions: { recentMessages: 5 },
       storageOptions: { saveMessages: "all" },
-      stopWhen: stepCountIs(2),
+      stopWhen: isStepCount(2),
       callSettings: { maxRetries: 1 },
       usageHandler: async () => {},
       rawRequestResponseHandler: async () => {},

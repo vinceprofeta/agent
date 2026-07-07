@@ -138,7 +138,7 @@ export async function saveMessages(
     promptMessageId: args.promptMessageId,
     pendingMessageId: args.pendingMessageId,
     embeddings,
-    messages: await Promise.all(
+    messages: (await Promise.all(
       args.messages.map(async (m, i) => {
         const { message, fileIds } = await serializeMessage(ctx, component, m);
         const base = args.metadata?.[i];
@@ -151,7 +151,7 @@ export async function saveMessages(
           ...(allFileIds.length > 0 ? { fileIds: allFileIds } : {}),
         });
       }),
-    ),
+    )) as any,
     failPendingSteps: args.failPendingSteps ?? false,
   });
   return { messages: result.messages };

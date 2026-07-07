@@ -10,7 +10,7 @@ import { getAuthUserId } from "../utils";
 import { embeddingModel } from "../modelsForDemo";
 
 const rag = new RAG(components.rag, {
-  textEmbeddingModel: embeddingModel,
+  textEmbeddingModel: embeddingModel as any,
   embeddingDimension: 1536,
 });
 

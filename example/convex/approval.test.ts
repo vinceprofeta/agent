@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
-import { Agent, createTool, stepCountIs, mockModel } from "@convex-dev/agent";
+import { Agent, createTool, isStepCount, mockModel } from "@convex-dev/agent";
 import { anyApi, actionGeneric, mutationGeneric } from "convex/server";
 import type {
   ApiFromModules,
@@ -67,7 +67,7 @@ const testApprovalAgent = new Agent(components.agent, {
       [{ type: "text", text: "I deleted the file important.txt." }],
     ],
   }),
-  stopWhen: stepCountIs(5),
+  stopWhen: isStepCount(5),
   // These are the real handlers from the example — the exact code that runs in prod
   usageHandler,
   rawRequestResponseHandler,
@@ -94,7 +94,7 @@ const testDenialAgent = new Agent(components.agent, {
       [{ type: "text", text: "Understood, I won't delete that file." }],
     ],
   }),
-  stopWhen: stepCountIs(5),
+  stopWhen: isStepCount(5),
   usageHandler,
   rawRequestResponseHandler,
 });
@@ -130,7 +130,7 @@ const testMultiToolApprovalAgent = new Agent(components.agent, {
       [{ type: "text", text: "Done! Deleted data.csv and transferred $500." }],
     ],
   }),
-  stopWhen: stepCountIs(5),
+  stopWhen: isStepCount(5),
   usageHandler,
   rawRequestResponseHandler,
 });

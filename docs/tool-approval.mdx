@@ -15,6 +15,11 @@ action before it happens.
 Add `needsApproval` to any tool created with `createTool`. It can be a
 boolean or an async function that receives the tool context and input:
 
+For AI SDK 7, `@convex-dev/agent` translates this Convex-specific
+`createTool` option into the SDK's call-level `toolApproval` configuration.
+If you pass plain AI SDK tools directly, configure approval with AI SDK 7's
+`toolApproval` option on the generation call.
+
 ```ts
 import { createTool } from "@convex-dev/agent";
 import { z } from "zod/v4";

@@ -197,7 +197,7 @@ distinct `order`, for ordering on the client side.
 import { components } from "./_generated/api";
 import { type ActionCtx } from "./_generated/server";
 import { DeltaStreamer, compressUIMessageChunks } from "@convex-dev/agent";
-import { streamText } from "ai";
+import { streamText, toUIMessageStream } from "ai";
 import { openai } from "@ai-sdk/openai";
 
 async function stream(ctx: ActionCtx, threadId: string, order: number) {
@@ -234,7 +234,7 @@ async function stream(ctx: ActionCtx, threadId: string, order: number) {
   // We could await here if we wanted to wait for the stream to finish,
   // but instead we have it process asynchronously so we can return a streaming
   // http Response.
-  void streamer.consumeStream(response.toUIMessageStream());
+  void streamer.consumeStream(toUIMessageStream({ stream: response.stream }));
 
   return {
     // e.g. to do `response.toTextStreamResponse()` for HTTP streaming.

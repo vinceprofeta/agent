@@ -988,12 +988,14 @@ describe("toUIMessages", () => {
                 toolCallId: "call1",
                 input: { action: "delete" },
                 args: { action: "delete" },
-              },
-              {
-                type: "tool-approval-request",
-                approvalId: "approval1",
-                toolCallId: "call1",
-              },
+	              },
+	              {
+	                type: "tool-approval-request",
+	                approvalId: "approval1",
+	                toolCallId: "call1",
+	                isAutomatic: true,
+	                signature: "signed-request",
+	              },
             ],
           },
         }),
@@ -1006,8 +1008,12 @@ describe("toUIMessages", () => {
         (p) => p.type === "tool-dangerousTool",
       ) as any;
       expect(toolPart).toBeDefined();
-      expect(toolPart.state).toBe("approval-requested");
-      expect(toolPart.approval).toEqual({ id: "approval1" });
+	      expect(toolPart.state).toBe("approval-requested");
+	      expect(toolPart.approval).toEqual({
+	        id: "approval1",
+	        isAutomatic: true,
+	        signature: "signed-request",
+	      });
     });
 
     it("sets state to approval-responded when tool-approval-response with approved: true", () => {
@@ -1026,12 +1032,14 @@ describe("toUIMessages", () => {
                 toolCallId: "call1",
                 input: { action: "delete" },
                 args: { action: "delete" },
-              },
-              {
-                type: "tool-approval-request",
-                approvalId: "approval1",
-                toolCallId: "call1",
-              },
+	              },
+	              {
+	                type: "tool-approval-request",
+	                approvalId: "approval1",
+	                toolCallId: "call1",
+	                isAutomatic: true,
+	                signature: "signed-request",
+	              },
             ],
           },
         }),
@@ -1061,12 +1069,14 @@ describe("toUIMessages", () => {
         (p) => p.type === "tool-dangerousTool",
       ) as any;
       expect(toolPart).toBeDefined();
-      expect(toolPart.state).toBe("approval-responded");
-      expect(toolPart.approval).toEqual({
-        id: "approval1",
-        approved: true,
-        reason: "User confirmed",
-      });
+	      expect(toolPart.state).toBe("approval-responded");
+	      expect(toolPart.approval).toEqual({
+	        id: "approval1",
+	        approved: true,
+	        reason: "User confirmed",
+	        isAutomatic: true,
+	        signature: "signed-request",
+	      });
     });
 
     it("sets state to output-denied when tool-approval-response with approved: false", () => {

@@ -5,10 +5,10 @@ import type {
   InferSchema,
 } from "@ai-sdk/provider-utils";
 import type {
-  CallSettings,
   EmbeddingModel,
   GenerateObjectResult,
   GenerateTextResult,
+  Instructions,
   LanguageModel,
   ModelMessage,
   StepResult,
@@ -17,7 +17,8 @@ import type {
   ToolChoice,
   ToolSet,
 } from "ai";
-import { generateObject, generateText, stepCountIs, streamObject } from "ai";
+import type { Context } from "@ai-sdk/provider-utils";
+import { generateObject, generateText, isStepCount, streamObject } from "ai";
 
 const MIGRATION_URL = "node_modules/@convex-dev/agent/MIGRATION.md";
 const warnedDeprecations = new Set<string>();
@@ -95,13 +96,14 @@ import type {
   Thread,
   UsageHandler,
   QueryCtx,
+  AgentCallSettings,
   AgentPrompt,
   Output,
 } from "./types.js";
 import { streamText } from "./streamText.js";
 import { errorToString, hasSuccessfulToolCall, willContinue } from "./utils.js";
 
-export { stepCountIs } from "ai";
+export { isStepCount } from "ai";
 export { hasSuccessfulToolCall };
 export {
   docsToModelMessages,
@@ -205,14 +207,14 @@ export class Agent<
    * This is useful if you want to share that type in `createTool`
    * e.g.
    * ```ts
-   * type MyCtx = ToolCtx & { orgId: string };
-   * const myTool = createTool({
-   *   args: z.object({...}),
-   *   description: "...",
-   *   handler: async (ctx: MyCtx, args) => {
-   *     // use ctx.orgId
-   *   },
-   * });
+	   * type MyCtx = ToolCtx & { orgId: string };
+	   * const myTool = createTool({
+	   *   inputSchema: z.object({...}),
+	   *   description: "...",
+	   *   execute: async (ctx: MyCtx, input) => {
+	   *     // use ctx.orgId
+	   *   },
+	   * });
    */
   CustomCtx extends object = object,
   AgentTools extends ToolSet = any,
@@ -415,12 +417,12 @@ export class Agent<
     options?: Options & { userId?: string | null; threadId?: string },
   ): Promise<{
     args: T & {
-      system?: string;
+      instructions?: Instructions;
       model: LanguageModel;
       prompt?: never;
       messages: ModelMessage[];
       tools?: TOOLS extends undefined ? AgentTools : TOOLS;
-    } & CallSettings;
+    } & AgentCallSettings;
     order: number;
     stepOrder: number;
     userId: string | undefined;
@@ -428,7 +430,7 @@ export class Agent<
     updateModel: (model: LanguageModel | undefined) => void;
     save: <TOOLS extends ToolSet>(
       toSave:
-        | { step: StepResult<TOOLS> }
+        | { step: StepResult<TOOLS, Context> }
         | { object: GenerateObjectResult<unknown> },
       createPendingMessage?: boolean,
     ) => Promise<void>;
@@ -442,7 +444,8 @@ export class Agent<
       {
         ...args,
         tools: (args.tools ?? this.options.tools) as Tools,
-        system: args.system ?? this.options.instructions,
+        instructions:
+          args.instructions ?? args.system ?? this.options.instructions,
         stopWhen: (args.stopWhen ?? this.options.stopWhen) as any,
       },
       {
@@ -480,7 +483,11 @@ export class Agent<
     generateTextArgs: AgentPrompt & TextArgs<AgentTools, TOOLS, OUTPUT>,
     options?: Options,
   ): Promise<
-    GenerateTextResult<TOOLS extends undefined ? AgentTools : TOOLS, OUTPUT> &
+    GenerateTextResult<
+      TOOLS extends undefined ? AgentTools : TOOLS,
+      Context,
+      OUTPUT
+    > &
       GenerationOutputMetadata
   > {
     const { args, promptMessageId, order, ...call } = await this.start(
@@ -490,21 +497,25 @@ export class Agent<
     );
 
     type Tools = TOOLS extends undefined ? AgentTools : TOOLS;
-    const steps: StepResult<Tools>[] = [];
+    const steps: StepResult<Tools, Context>[] = [];
     try {
-      const result = (await generateText<Tools, OUTPUT>({
-        ...args,
+      const { onStepFinish, ...argsWithoutDeprecatedCallbacks } =
+        args as typeof args & {
+          onStepFinish?: (step: StepResult<Tools, Context>) => unknown;
+        };
+      const result = (await generateText<Tools, Context, OUTPUT>({
+        ...argsWithoutDeprecatedCallbacks,
         prepareStep: async (options) => {
           const result = await generateTextArgs.prepareStep?.(options);
           call.updateModel(result?.model ?? options.model);
           return result;
         },
-        onStepFinish: async (step) => {
+        onStepEnd: async (step) => {
           steps.push(step);
           await call.save({ step }, await willContinue(steps, args.stopWhen));
-          return generateTextArgs.onStepFinish?.(step);
+          return generateTextArgs.onStepEnd?.(step) ?? onStepFinish?.(step);
         },
-      })) as GenerateTextResult<Tools, OUTPUT>;
+      })) as GenerateTextResult<Tools, Context, OUTPUT>;
       const metadata: GenerationOutputMetadata = {
         promptMessageId,
         order,
@@ -554,7 +565,11 @@ export class Agent<
       saveStreamDeltas?: boolean | StreamingOptions;
     },
   ): Promise<
-    StreamTextResult<TOOLS extends undefined ? AgentTools : TOOLS, OUTPUT> &
+    StreamTextResult<
+      TOOLS extends undefined ? AgentTools : TOOLS,
+      Context,
+      OUTPUT
+    > &
       GenerationOutputMetadata
   > {
     type Tools = TOOLS extends undefined ? AgentTools : TOOLS;
@@ -565,7 +580,10 @@ export class Agent<
         ...streamTextArgs,
         model: streamTextArgs.model ?? this.options.languageModel,
         tools: (streamTextArgs.tools ?? this.options.tools) as Tools,
-        system: streamTextArgs.system ?? this.options.instructions,
+        instructions:
+          streamTextArgs.instructions ??
+          streamTextArgs.system ??
+          this.options.instructions,
         stopWhen: (streamTextArgs.stopWhen ?? this.options.stopWhen) as any,
       },
       {
@@ -669,8 +687,6 @@ export class Agent<
       ...(args as any),
       onError: async (error) => {
         console.error(" streamObject onError", error);
-        // TODO: content that we have so far
-        // content: stream.fullStream.
         await fail(errorToString(error.error));
         return args.onError?.(error);
       },
@@ -955,7 +971,7 @@ export class Agent<
     return embedMessages(
       ctx,
       { ...args, ...this.options, agentName: this.options.name },
-      messages,
+      messages as any,
     );
   }
 
@@ -1008,7 +1024,7 @@ export class Agent<
         userId: messages[0].userId,
         embeddingModel,
       },
-      messages,
+      messages as any,
     );
   }
 
@@ -1204,12 +1220,11 @@ export class Agent<
       /**
        * The previous step in the same generation loop, if any. Pass it so we
        * can compute how many of `step.response.messages` are already saved.
-       * Omit for the first step. AI SDK v6's `step.response.messages` is
-       * cumulative across steps; without this, multi-step callers duplicate
-       * every prior message on every save — the exact failure mode this fix
-       * addresses, just at the public-API layer.
+       *
+       * @deprecated AI SDK 7 returns per-step response messages, so this
+       * parameter is ignored.
        */
-      previousStep?: StepResult<TOOLS>;
+      previousStep?: StepResult<TOOLS, Context>;
       /**
        * The model used to generate the step.
        * Defaults to the chat model for the Agent.
@@ -1222,18 +1237,6 @@ export class Agent<
       provider?: string;
     },
   ): Promise<{ messages: MessageDoc[] }> {
-    const previousResponseMessageCount =
-      args.previousStep?.response.messages.length ?? 0;
-    if (
-      args.previousStep !== undefined &&
-      args.step.response.messages.length < previousResponseMessageCount
-    ) {
-      throw new Error(
-        `saveStep: step.response.messages length (${args.step.response.messages.length}) is less than ` +
-          `previousStep.response.messages length (${previousResponseMessageCount}). ` +
-          `Ensure previousStep is from the immediately preceding step in the same generation loop.`,
-      );
-    }
     const { messages } = await serializeNewMessagesInStep(
       ctx,
       this.component,
@@ -1242,7 +1245,6 @@ export class Agent<
         provider: args.provider ?? getProviderName(this.options.languageModel),
         model: args.model ?? getModelName(this.options.languageModel),
       },
-      previousResponseMessageCount,
     );
     const embeddings = await this.generateEmbeddings(
       ctx,
@@ -1254,7 +1256,7 @@ export class Agent<
       threadId: args.threadId,
       agentName: this.options.name,
       promptMessageId: args.promptMessageId,
-      messages,
+      messages: messages as any,
       embeddings,
       failPendingSteps: false,
     });
@@ -1305,7 +1307,7 @@ export class Agent<
       threadId: args.threadId,
       promptMessageId: args.promptMessageId,
       failPendingSteps: false,
-      messages,
+      messages: messages as any,
       embeddings,
       agentName: this.options.name,
     });
@@ -1371,7 +1373,7 @@ export class Agent<
     await ctx.runMutation(this.component.messages.updateMessage, {
       messageId: args.messageId,
       patch: {
-        message,
+        message: message as any,
         fileIds: args.patch.fileIds
           ? [...args.patch.fileIds, ...(fileIds ?? [])]
           : fileIds,
@@ -1557,7 +1559,7 @@ export class Agent<
        */
       stopWhen?: StopCondition<AgentTools> | Array<StopCondition<AgentTools>>;
     } & Options,
-    overrides?: CallSettings,
+    overrides?: AgentCallSettings,
   ) {
     return internalActionGeneric({
       args: vTextArgs,
@@ -1573,9 +1575,9 @@ export class Agent<
           messages: messages?.map(toModelMessage),
           prompt: Array.isArray(prompt) ? prompt.map(toModelMessage) : prompt,
           toolChoice: args.toolChoice as ToolChoice<AgentTools>,
-        } satisfies StreamingTextArgs<AgentTools>;
+        } as StreamingTextArgs<AgentTools>;
         if (maxSteps) {
-          llmArgs.stopWhen = stepCountIs(maxSteps);
+          (llmArgs as any).stopWhen = isStepCount(maxSteps);
         }
         const opts = {
           ...pick(spec, ["contextOptions", "storageOptions"]),
@@ -1591,7 +1593,7 @@ export class Agent<
           const result = await this.streamText<any>(
             ctx,
             targetArgs,
-            llmArgs,
+            llmArgs as any,
             opts,
           );
           await result.consumeStream();
@@ -1607,7 +1609,7 @@ export class Agent<
           const res = await this.generateText<any>(
             ctx,
             targetArgs,
-            llmArgs,
+            llmArgs as any,
             opts,
           );
           return {

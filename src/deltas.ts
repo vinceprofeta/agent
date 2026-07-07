@@ -1,7 +1,10 @@
 import {
   readUIMessageStream,
+  type CustomContentUIPart,
   type DynamicToolUIPart,
+  type FileUIPart,
   type ProviderMetadata,
+  type ReasoningFileUIPart,
   type ReasoningUIPart,
   type TextUIPart,
   type ToolUIPart,
@@ -157,6 +160,86 @@ export function applyUIMessageChunksIncremental(
     const idx = toolIndexById.get(toolCallId);
     return idx === undefined ? undefined : (message.parts[idx] as ToolPart);
   };
+  const toolPartByApprovalId = (
+    approvalId: string,
+  ): ToolPart | undefined => {
+    return message.parts.find(
+      (p): p is ToolPart =>
+        "approval" in p &&
+        (p as ToolPart & { approval?: { id?: string } }).approval?.id ===
+          approvalId,
+    );
+  };
+  const toolNameFromPart = (part: ToolPart): string =>
+    part.type === "dynamic-tool"
+      ? part.toolName
+      : part.type.slice("tool-".length);
+  const upsertToolPart = (options: {
+    toolCallId: string;
+    toolName: string;
+    dynamic?: boolean;
+    state: ToolPart["state"];
+    input?: unknown;
+    rawInput?: unknown;
+    output?: unknown;
+    errorText?: string;
+    preliminary?: boolean;
+    providerExecuted?: boolean;
+    providerMetadata?: ProviderMetadata;
+    toolMetadata?: Record<string, unknown>;
+    title?: string;
+  }): ToolPart => {
+    let toolPart = toolPartAt(options.toolCallId) as
+      | (ToolPart & any)
+      | undefined;
+    if (!toolPart) {
+      toolPart = options.dynamic
+        ? ({
+            type: "dynamic-tool",
+            toolName: options.toolName,
+            toolCallId: options.toolCallId,
+          } as DynamicToolUIPart & any)
+        : ({
+            type: `tool-${options.toolName}`,
+            toolCallId: options.toolCallId,
+          } as ToolUIPart & any);
+      message.parts.push(toolPart);
+      toolIndexById.set(options.toolCallId, message.parts.length - 1);
+    }
+
+    toolPart.state = options.state;
+    if (toolPart.type === "dynamic-tool") {
+      toolPart.toolName = options.toolName;
+    }
+    if ("input" in options) toolPart.input = options.input;
+    if ("rawInput" in options) toolPart.rawInput = options.rawInput;
+    if ("output" in options) toolPart.output = options.output;
+    if ("errorText" in options) toolPart.errorText = options.errorText;
+    if ("preliminary" in options) toolPart.preliminary = options.preliminary;
+    if (options.title !== undefined) toolPart.title = options.title;
+    if (options.toolMetadata !== undefined) {
+      toolPart.toolMetadata = options.toolMetadata;
+    }
+    toolPart.providerExecuted =
+      options.providerExecuted ?? toolPart.providerExecuted;
+    if (options.providerMetadata) {
+      if (
+        options.state === "output-available" ||
+        options.state === "output-error"
+      ) {
+        toolPart.resultProviderMetadata = mergeProviderMetadata(
+          toolPart.resultProviderMetadata,
+          options.providerMetadata,
+        );
+      } else {
+        toolPart.callProviderMetadata = mergeProviderMetadata(
+          toolPart.callProviderMetadata,
+          options.providerMetadata,
+        );
+      }
+    }
+    return toolPart;
+  };
   const mergeMetadata = (metadata: unknown) => {
     if (metadata == null) {
       return;
@@ -205,6 +288,14 @@ export function applyUIMessageChunksIncremental(
         }
         break;
       }
+      case "custom": {
+        message.parts.push({
+          type: "custom",
+          kind: part.kind,
+          providerMetadata: part.providerMetadata,
+        } satisfies CustomContentUIPart);
+        break;
+      }
       case "reasoning-start": {
         const newPart: ReasoningUIPart = {
           type: "reasoning",
@@ -242,23 +333,17 @@ export function applyUIMessageChunksIncremental(
         break;
       }
       case "tool-input-start": {
-        const newToolPart: ToolUIPart | DynamicToolUIPart = part.dynamic
-          ? ({
-              type: "dynamic-tool",
-              toolCallId: part.toolCallId,
-              toolName: part.toolName,
-              state: "input-streaming",
-              input: undefined,
-            } satisfies DynamicToolUIPart)
-          : ({
-              type: `tool-${part.toolName}`,
-              toolCallId: part.toolCallId,
-              state: "input-streaming",
-              input: undefined,
-              providerExecuted: part.providerExecuted,
-            } satisfies ToolUIPart);
-        message.parts.push(newToolPart);
-        toolIndexById.set(part.toolCallId, message.parts.length - 1);
+        upsertToolPart({
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          dynamic: part.dynamic,
+          state: "input-streaming",
+          input: undefined,
+          providerExecuted: part.providerExecuted,
+          providerMetadata: part.providerMetadata,
+          toolMetadata: part.toolMetadata,
+          title: part.title,
+        });
         toolInputText[part.toolCallId] = "";
         break;
       }
@@ -275,18 +360,17 @@ export function applyUIMessageChunksIncremental(
         break;
       }
       case "tool-input-available": {
-        const toolPart = toolPartAt(part.toolCallId);
-        if (toolPart) {
-          transitionToolPart(toolPart, {
-            state: "input-available",
-            input: part.input,
-            callProviderMetadata: mergeProviderMetadata(
-              (toolPart as { callProviderMetadata?: ProviderMetadata })
-                .callProviderMetadata,
-              part.providerMetadata,
-            ),
-          });
-        }
+        upsertToolPart({
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          dynamic: part.dynamic,
+          state: "input-available",
+          input: part.input,
+          providerExecuted: part.providerExecuted,
+          providerMetadata: part.providerMetadata,
+          toolMetadata: part.toolMetadata,
+          title: part.title,
+        });
         touchedTools.delete(part.toolCallId);
         // The raw JSON buffer is no longer needed; drop it so it doesn't get
         // carried through every later batch on the hot path.
@@ -295,21 +379,23 @@ export function applyUIMessageChunksIncremental(
       }
       case "tool-input-error": {
         const toolPart = toolPartAt(part.toolCallId);
-        if (toolPart) {
-          transitionToolPart(toolPart, {
-            state: "output-error",
-            errorText: part.errorText,
-            providerExecuted: part.providerExecuted,
-            ...(toolPart.type === "dynamic-tool"
-              ? { input: part.input }
-              : { input: undefined, rawInput: part.input }),
-            callProviderMetadata: mergeProviderMetadata(
-              (toolPart as { callProviderMetadata?: ProviderMetadata })
-                .callProviderMetadata,
-              part.providerMetadata,
-            ),
-          });
-        }
+        const dynamic = toolPart
+          ? toolPart.type === "dynamic-tool"
+          : part.dynamic;
+        upsertToolPart({
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          dynamic,
+          state: "output-error",
+          errorText: part.errorText,
+          providerExecuted: part.providerExecuted,
+          providerMetadata: part.providerMetadata,
+          toolMetadata: part.toolMetadata,
+          title: part.title,
+          ...(dynamic
+            ? { input: part.input }
+            : { input: undefined, rawInput: part.input }),
+        });
         touchedTools.delete(part.toolCallId);
         delete toolInputText[part.toolCallId];
         break;
@@ -317,11 +403,18 @@ export function applyUIMessageChunksIncremental(
       case "tool-output-available": {
         const toolPart = toolPartAt(part.toolCallId);
         if (toolPart) {
-          transitionToolPart(toolPart, {
+          upsertToolPart({
+            toolCallId: part.toolCallId,
+            toolName: toolNameFromPart(toolPart),
+            dynamic: toolPart.type === "dynamic-tool",
             state: "output-available",
+            input: (toolPart as any).input,
             output: part.output,
             preliminary: part.preliminary,
             providerExecuted: part.providerExecuted,
+            providerMetadata: part.providerMetadata,
+            toolMetadata: part.toolMetadata ?? toolPart.toolMetadata,
+            title: toolPart.title,
           });
         }
         break;
@@ -329,10 +422,18 @@ export function applyUIMessageChunksIncremental(
       case "tool-output-error": {
         const toolPart = toolPartAt(part.toolCallId);
         if (toolPart) {
-          transitionToolPart(toolPart, {
+          upsertToolPart({
+            toolCallId: part.toolCallId,
+            toolName: toolNameFromPart(toolPart),
+            dynamic: toolPart.type === "dynamic-tool",
             state: "output-error",
+            input: (toolPart as any).input,
+            rawInput: (toolPart as any).rawInput,
             errorText: part.errorText,
             providerExecuted: part.providerExecuted,
+            providerMetadata: part.providerMetadata,
+            toolMetadata: part.toolMetadata ?? toolPart.toolMetadata,
+            title: toolPart.title,
           });
         }
         break;
@@ -349,7 +450,44 @@ export function applyUIMessageChunksIncremental(
         if (toolPart) {
           transitionToolPart(toolPart, {
             state: "approval-requested",
-            approval: { id: part.approvalId },
+            approval: {
+              id: part.approvalId,
+              ...(part.isAutomatic !== undefined
+                ? { isAutomatic: part.isAutomatic }
+                : {}),
+              ...(part.signature !== undefined ? { signature: part.signature } : {}),
+            },
+          });
+        }
+        break;
+      }
+      case "tool-approval-response": {
+        const toolPart = toolPartByApprovalId(part.approvalId);
+        if (toolPart) {
+          const existingApproval = (
+            toolPart as ToolPart & {
+              approval?: { isAutomatic?: boolean; signature?: string };
+            }
+          ).approval;
+          transitionToolPart(toolPart, {
+            state: "approval-responded",
+            approval: {
+              id: part.approvalId,
+              approved: part.approved,
+              reason: part.reason,
+              ...(existingApproval?.isAutomatic !== undefined
+                ? { isAutomatic: existingApproval.isAutomatic }
+                : {}),
+              ...(existingApproval?.signature !== undefined
+                ? { signature: existingApproval.signature }
+                : {}),
+            },
+            providerExecuted: part.providerExecuted,
+            callProviderMetadata: mergeProviderMetadata(
+              (toolPart as { callProviderMetadata?: ProviderMetadata })
+                .callProviderMetadata,
+              part.providerMetadata,
+            ),
           });
         }
         break;
@@ -374,11 +512,13 @@ export function applyUIMessageChunksIncremental(
         });
         break;
       case "file":
+      case "reasoning-file":
         message.parts.push({
-          type: "file",
+          type: part.type,
           mediaType: part.mediaType,
           url: part.url,
-        });
+          providerMetadata: part.providerMetadata,
+        } satisfies FileUIPart | ReasoningFileUIPart);
         break;
       case "start-step":
         message.parts.push({ type: "step-start" });
